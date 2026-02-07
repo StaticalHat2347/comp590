@@ -42,7 +42,7 @@
 
 **Report important parameters used in your attack. For each sweep operation, you access N addresses, and you count the number of sweep operations within a time interval P ms. What values of N and P do you use? How do you choose N? Why do not you choose P to be larger or smaller?**
 
-
+We use a timing window of P = 2 ms and an 8 MB buffer accessed with a 64-byte stride, which results in approximately N ≈ 131,072 memory addresses per sweep. We choose N to ensure that each sweep occupies a significant portion of the last-level cache, increasing the likelihood of cache eviction by victim activity. A smaller buffer would reduce cache contention and weaken the signal, while a much larger buffer would increase execution time without improving distinguishability. We do not choose P to be larger because longer windows smooth out short-lived cache activity, and it is not chosen to be smaller because JavaScript timer resolution and system noise would dominate the measurements.
 
 
 ## 2-3
