@@ -58,7 +58,12 @@ We use a timing window of P = 2 ms and an 8 MB buffer accessed with a 64-byte st
 
 **Use the Python code we provided in Part 2.1 to analyze simple statistics (mean, median, etc.) on the traces from google.com and nytimes.com. Report the statistic numbers.**
 
-
+https://www.google.com
+count 20 trace_len 2500
+mean 18.34496 median 19.0 std 2.7443619656306275 min -1.0 max 21.0
+https://www.nytimes.com
+count 20 trace_len 2500
+mean 17.31072 median 18.0 std 2.865179415254828 min -1.0 max 21.0
 
 
 ## 2-6
@@ -66,7 +71,16 @@ We use a timing window of P = 2 ms and an 8 MB buffer accessed with a 64-byte st
 **Include your classification results in your report.**
 
 ```
+                           precision    recall  f1-score   support
 
+      https://www.cnn.com       1.00      0.97      0.99        40
+   https://www.google.com       1.00      0.68      0.81        40
+  https://www.nytimes.com       0.89      1.00      0.94        40
+https://www.wikipedia.org       0.82      1.00      0.90        40
+
+                 accuracy                           0.91       160
+                macro avg       0.93      0.91      0.91       160
+             weighted avg       0.93      0.91      0.91       160
 ```
 
 

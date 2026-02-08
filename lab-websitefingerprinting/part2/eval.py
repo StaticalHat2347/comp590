@@ -1,4 +1,5 @@
 import json
+import os
 import numpy as np
 
 from sklearn.ensemble import RandomForestClassifier
@@ -15,6 +16,20 @@ def eval():
         ### 2. Split data into X_train, X_test, y_train, y_test with train_test_split
         ### 3. Train classifier with X_train and y_train
         ### 4. Use classifier to make predictions on X_test. Save the result to a variable called y_pred
+        traces_path = os.path.join(os.path.dirname(__file__), "traces.out")
+        with open(traces_path, "r") as f:
+            data = json.load(f)
+
+        X = np.array(data["traces"])
+        y = np.array(data["labels"])
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=i, stratify=y
+        )
+
+        clf = RandomForestClassifier(n_estimators=200, random_state=i)
+        clf.fit(X_train, y_train)
+        y_pred = clf.predict(X_test)
 
         # Do not modify the next two lines
         y_test_full.extend(y_test)
@@ -22,6 +37,7 @@ def eval():
 
     ### TODO: Exercise 2-5 (continued)
     ### 5. Print classification report using y_test_full and y_pred_full
+    print(classification_report(y_test_full, y_pred_full))
 
 if __name__ == "__main__":
     eval()
