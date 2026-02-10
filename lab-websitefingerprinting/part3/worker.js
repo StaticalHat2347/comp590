@@ -1,9 +1,10 @@
-// Number of sweep counts
-// TODO (Exercise 3-1): Choose an appropriate value!
-let P = 1000;
+// part3/worker.js
 
-// Number of elements in your trace
-let K = 5 * 1000 / P; 
+// Window size in ms (keep same as Part 2 for fair comparison)
+let P = 2;
+
+// Number of elements in your trace (5 seconds total)
+let K = (5 * 1000) / P;
 
 // Array of length K with your trace's values
 let T;
@@ -15,16 +16,32 @@ function record() {
   // Create empty array for saving trace values
   T = new Array(K);
 
-  // Fill array with -1 so we can be sure memory is allocated
+  // Fill array with -1 so we can be sure memory is allocated (outside hot loop)
   T.fill(-1, 0, T.length);
 
   // Save start timestamp
   start = performance.now();
 
-  // TODO (Exercise 3-1): Record data for 5 seconds and save values to T.
+  // Index into trace array
+  let idx = 0;
 
-  // Once done recording, send result to main thread
-  postMessage(JSON.stringify(T));
+  // Record for ~5 seconds
+  while (performance.now() - start < 5000 && idx < K) {
+    let windowStart = performance.now();
+    let count = 0;
+
+    // HOT LOOP: only an add operation (incrementing a counter)
+    while (performance.now() - windowStart < P) {
+      count = count + 1; // (equivalently: count++)
+    }
+
+    T[idx] = count;
+    idx++;
+  }
+
+  // Send trace back to main thread
+  postMessage(JSON.stringify(T.slice(0, idx)));
+
 }
 
 // DO NOT MODIFY BELOW THIS LINE -- PROVIDED BY COURSE STAFF
