@@ -85,13 +85,22 @@ https://www.wikipedia.org       0.82      1.00      0.90        40
 
 
 
-
 ## 3-2
 
 **Include your new accuracy results for the modified attack code in your report.**
 
 ```
+PART 3
+                          precision    recall  f1-score   support
 
+      https://www.cnn.com       0.65      0.60      0.62        40
+   https://www.google.com       0.80      0.50      0.62        40
+  https://www.nytimes.com       0.70      0.70      0.70        40
+https://www.wikipedia.org       0.69      1.00      0.82        40
+
+                 accuracy                           0.70       160
+                macro avg       0.71      0.70      0.69       160
+             weighted avg       0.71      0.70      0.69       160
 ```
 
 
@@ -101,3 +110,4 @@ https://www.wikipedia.org       0.82      1.00      0.90        40
 
 **Compare your accuracy numbers between Part 2 and 3. Does the accuracy decrease in Part 3? Do you think that our “cache-occupancy” attack actually exploits a cache side channel? If not, take a guess as to possible root causes of the modified attack.**
 
+Yes, accuracy drops from 0.91 in Part 2 to 0.70 in Part 3. This suggests the modified “cache-occupancy” version is capturing a weaker or noisier signal. My guess is that without the original eviction-based pattern, the measurements are dominated by CPU scheduling, JIT/GC activity, and other system noise, so the traces still have some site-dependent structure but are not primarily reflecting cache effects.
