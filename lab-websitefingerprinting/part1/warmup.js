@@ -4,7 +4,7 @@ const runs = 10;
 // console.log("Hello World");
 
 function measureOneLine() {
-  const LINE_SIZE = 8; // originally 16; local machien is 64/sizeof(double) Note that js treats all numbers as double
+  const LINE_SIZE = 8; // originally 16; local machine is on x64. 64/sizeof(double) Note that js treats all numbers as double
   let result = [];
 
   // Fill with -1 to ensure allocation
