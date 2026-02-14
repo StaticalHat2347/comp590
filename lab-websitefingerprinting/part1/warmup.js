@@ -7,6 +7,7 @@ function measureOneLine() {
   const LINE_SIZE = 8; // originally 16; local machine is on x64. 64/sizeof(double) Note that js treats all numbers as double
   let result = [];
 
+  
   // Fill with -1 to ensure allocation
   const M = new Array(runs * LINE_SIZE).fill(-1);
 
@@ -49,4 +50,4 @@ document.getElementById(
 document.getElementById(
   "exercise2-values"
   // The input will be the number of cache lines
-).innerText = `N Cache Lines: [${measureNLines(1).join(", ")}]`;
+).innerText = `N Cache Lines: [${measureNLines(10000000).join(", ")}]`;

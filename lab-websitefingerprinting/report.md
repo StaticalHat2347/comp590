@@ -4,11 +4,11 @@
 
 **Report your browser version, CPU type, cache size, RAM amount, and OS. We use this information to learn about the attack’s behavior on different machines.**
 
-- Browser:
-- CPU:
-- Cache sizes:
-- RAM:
-- OS:
+- Browser: Google Chrome
+- CPU: 13th Gen Intel(R) Core(TM) i7-1355U (1.70 GHz)
+- Cache sizes: 12 MB
+- RAM: 16 GB
+- OS: Windows 11 Home
 
 
 
@@ -17,16 +17,16 @@
 
 **Use the values printed on the webpage to find the median access time and report your results as follows.**
 
-| Number of Cache Lines | Median Access Latency (ms) |
-| --------------------- | -------------------------- |
-| 1                     |                            |
-| 10                    |                            |
-| 100                   |                            |
-| 1,000                 |                            |
-| 10,000                |                            |
-| 100,000               |                            |
-| 1,000,000             |                            |
-| 10,000,000            |                            |
+| Number of Cache Lines |   Median Access Latency (ms)   |
+| --------------------- | ------------------------------ |
+| 1                     |             0                  |
+| 10                    |             0                  |
+| 100                   |             0                  |
+| 1,000                 |             0                  |
+| 10,000                |             0.10               |
+| 100,000               |             0.20               |
+| 1,000,000             |             0.60               |
+| 10,000,000            |        N/A - out of memory     |
 
 
 
@@ -35,7 +35,7 @@
 
 **According to your measurement results, what is the resolution of your `performance.now()`? In order to measure differences in time with `performance.now()``, approximately how many cache accesses need to be performed?**
 
-
+The resolution, or the minimum measureable time increment in this case, is 0.10 milliseconds/100 microseconds. To measure differences in time with performance.now, at least 10,000 cache accesses need to be performed.
 
 
 ## 2-2
