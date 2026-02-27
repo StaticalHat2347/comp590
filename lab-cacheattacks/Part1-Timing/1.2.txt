@@ -1,0 +1,12 @@
+Architecture: x86_64
+CPU Model: Intel Xeon Silver 4110 @ 2.10GHz
+Sockets: 2
+Cores per socket: 8
+Threads per core: 2
+Total logical CPUs: 32
+
+Cache Table
+Level	Size	Line Size	Associativity	Sets
+L1d	32 KB	64 B	8-way	64
+L2	1 MB	64 B	16-way	1024
+L3	11 MB	64 B	11-way	16384

@@ -1,0 +1,9 @@
+We collected multiple timing samples to reduce measurement noise and observe latency distributions.
+
+Using 100 runs allowed us to generate histograms that show clustering of access times for each memory level.
+
+The histogram shows that DRAM accesses have significantly higher latency than cache accesses.
+
+Although L1, L2, and L3 latencies overlap somewhat due to measurement overhead and CPU security mitigations, they still form distinguishable clusters.
+
+Repeating measurements helps average out system noise, scheduling interference, and timing variance.
