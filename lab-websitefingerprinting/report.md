@@ -4,11 +4,11 @@
 
 **Report your browser version, CPU type, cache size, RAM amount, and OS. We use this information to learn about the attack’s behavior on different machines.**
 
-- Browser:
-- CPU:
-- Cache sizes:
-- RAM:
-- OS:
+- Browser: Google Chrome
+- CPU: 13th Gen Intel(R) Core(TM) i7-1355U (1.70 GHz)
+- Cache sizes: 12 MB
+- RAM: 16 GB
+- OS: Windows 11 Home
 
 
 
@@ -17,16 +17,16 @@
 
 **Use the values printed on the webpage to find the median access time and report your results as follows.**
 
-| Number of Cache Lines | Median Access Latency (ms) |
-| --------------------- | -------------------------- |
-| 1                     |                            |
-| 10                    |                            |
-| 100                   |                            |
-| 1,000                 |                            |
-| 10,000                |                            |
-| 100,000               |                            |
-| 1,000,000             |                            |
-| 10,000,000            |                            |
+| Number of Cache Lines |   Median Access Latency (ms)   |
+| --------------------- | ------------------------------ |
+| 1                     |             0                  |
+| 10                    |             0                  |
+| 100                   |             0                  |
+| 1,000                 |             0                  |
+| 10,000                |             0.10               |
+| 100,000               |             0.20               |
+| 1,000,000             |             0.60               |
+| 10,000,000            |        N/A - out of memory     |
 
 
 
@@ -35,7 +35,7 @@
 
 **According to your measurement results, what is the resolution of your `performance.now()`? In order to measure differences in time with `performance.now()``, approximately how many cache accesses need to be performed?**
 
-
+The resolution, or the minimum measureable time increment in this case, is 0.10 milliseconds/100 microseconds. To measure differences in time with performance.now, at least 10,000 cache accesses need to be performed.
 
 
 ## 2-2
@@ -85,13 +85,22 @@ https://www.wikipedia.org       0.82      1.00      0.90        40
 
 
 
-
 ## 3-2
 
 **Include your new accuracy results for the modified attack code in your report.**
 
 ```
+PART 3
+                          precision    recall  f1-score   support
 
+      https://www.cnn.com       0.65      0.60      0.62        40
+   https://www.google.com       0.80      0.50      0.62        40
+  https://www.nytimes.com       0.70      0.70      0.70        40
+https://www.wikipedia.org       0.69      1.00      0.82        40
+
+                 accuracy                           0.70       160
+                macro avg       0.71      0.70      0.69       160
+             weighted avg       0.71      0.70      0.69       160
 ```
 
 
@@ -101,3 +110,4 @@ https://www.wikipedia.org       0.82      1.00      0.90        40
 
 **Compare your accuracy numbers between Part 2 and 3. Does the accuracy decrease in Part 3? Do you think that our “cache-occupancy” attack actually exploits a cache side channel? If not, take a guess as to possible root causes of the modified attack.**
 
+Yes, accuracy drops from 0.91 in Part 2 to 0.70 in Part 3. This suggests the modified “cache-occupancy” version is capturing a weaker or noisier signal. My guess is that without the original eviction-based pattern, the measurements are dominated by CPU scheduling, JIT/GC activity, and other system noise, so the traces still have some site-dependent structure but are not primarily reflecting cache effects.

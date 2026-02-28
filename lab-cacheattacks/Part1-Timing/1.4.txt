@@ -1,0 +1,17 @@
+In this part, we measured the access latency for different levels of the memory hierarchy.
+
+To measure L1 latency, we accessed the target buffer twice to ensure it was cached in L1, then measured the access time.
+
+To measure L2 latency, we first flushed the target from cache, then reloaded it, and evicted L1 by accessing a buffer larger than the L1 cache size. This forced the data into L2 before measuring.
+
+To measure L3 latency, we flushed the target again and accessed a buffer larger than L2 to evict it from L2 but keep it in L3.
+
+To measure DRAM latency, we used clflush to remove the target from all cache levels before measuring the access time.
+
+Observed approximate latencies:
+- L1: ~100–110 cycles
+- L2: ~100–115 cycles
+- L3: ~110–125 cycles
+- DRAM: ~270–360 cycles
+
+The cache levels appear close in value due to measurement overhead and CPU mitigation features, but DRAM latency is clearly much higher.
