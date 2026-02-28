@@ -19,10 +19,14 @@
 #define SET_STRIDE_BYTES (1 << 17)   // 128 KB keeps set index stable on more cache configs
 #define PROBE_WAYS 12
 
-#define MIN_CONFIDENCE_GAP 4
-#define CALIBRATION_ROUNDS 20
-#define GAP_CONFIRM_SCANS 2
-#define MIN_SYMBOL_VOTES 2
+#define MIN_CONFIDENCE_GAP 10
+#define CALIBRATION_ROUNDS 30
+#define GAP_CONFIRM_SCANS 4
+#define MIN_SYMBOL_VOTES 5
+
+#define SYNC_SYMBOL 255
+#define SYNC_REPS 6
+#define PAYLOAD_REPS 6
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -65,7 +69,7 @@ static CYCLES calibrate_busy_threshold(void *buf)
 	}
 
 	CYCLES baseline = (CYCLES)(sum_all / count);
-	return (CYCLES)(baseline + 8);
+	return (CYCLES)(baseline + 18);
 }
 
 static int detect_hot_set(void *buf, CYCLES busy_threshold)
@@ -128,7 +132,11 @@ int main(int argc, char **argv)
 	int votes[NUM_SYMBOL_SETS] = {0};
 	int total_votes = 0;
 	int idle_scans = 0;
-	int last_printed = -1;
+
+	int sync_seen = 0;
+	bool receiving_payload = false;
+	int payload_seen = 0;
+	int payload_votes[NUM_SYMBOL_SETS] = {0};
 
 	while (keep_running) {
 		int hot_set = detect_hot_set(buf, busy_threshold);
@@ -161,11 +169,38 @@ int main(int argc, char **argv)
 			}
 		}
 
-		if (total_votes >= MIN_SYMBOL_VOTES && (votes[best_set] * 2) >= total_votes) {
-			if (best_set != last_printed) {
-				printf("Received: %d\n", best_set);
-				fflush(stdout);
-				last_printed = best_set;
+		if (total_votes >= MIN_SYMBOL_VOTES && (votes[best_set] * 3) >= (total_votes * 2)) {
+			if (receiving_payload) {
+				payload_votes[best_set]++;
+				payload_seen++;
+
+				if (payload_seen >= PAYLOAD_REPS) {
+					int payload_best = 0;
+					for (int set_idx = 1; set_idx < NUM_SYMBOL_SETS; set_idx++) {
+						if (payload_votes[set_idx] > payload_votes[payload_best]) {
+							payload_best = set_idx;
+						}
+					}
+
+					printf("Received: %d\n", payload_best);
+					fflush(stdout);
+
+					memset(payload_votes, 0, sizeof(payload_votes));
+					payload_seen = 0;
+					receiving_payload = false;
+					sync_seen = 0;
+				}
+			} else {
+				if (best_set == SYNC_SYMBOL) {
+					sync_seen++;
+					if (sync_seen >= SYNC_REPS) {
+						receiving_payload = true;
+						payload_seen = 0;
+						memset(payload_votes, 0, sizeof(payload_votes));
+					}
+				} else {
+					sync_seen = 0;
+				}
 			}
 		}
 

@@ -19,8 +19,11 @@
 #define SET_STRIDE_BYTES (1 << 17)   // 128 KB keeps set index stable on more cache configs
 #define EVICTION_WAYS 12
 
-#define SYMBOL_NS 250000000ULL        // 250 ms per symbol
-#define GAP_NS 80000000ULL            // 80 ms of silence between symbols
+#define SYMBOL_NS 120000000ULL        // 120 ms per symbol
+#define GAP_NS 40000000ULL            // 40 ms of silence between symbols
+#define SYNC_SYMBOL 255
+#define SYNC_REPS 6
+#define PAYLOAD_REPS 6
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -123,8 +126,13 @@ int main(int argc, char **argv)
         continue;
       }
 
-      transmit_symbol(buf, symbol);
-      transmit_symbol(buf, symbol);
+      for (int i = 0; i < SYNC_REPS; i++) {
+        transmit_symbol(buf, SYNC_SYMBOL);
+      }
+
+      for (int i = 0; i < PAYLOAD_REPS; i++) {
+        transmit_symbol(buf, symbol);
+      }
   }
 
   printf("Sender finished.\n");
