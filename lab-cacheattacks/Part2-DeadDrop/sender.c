@@ -16,12 +16,11 @@
 
 #define CACHE_LINE_BYTES 64
 #define NUM_SYMBOL_SETS 256
-#define SET_STRIDE_BYTES (1 << 16)   // 64 KB keeps the same L2 set index
-#define EVICTION_WAYS 24
+#define SET_STRIDE_BYTES (1 << 17)   // 128 KB keeps set index stable on more cache configs
+#define EVICTION_WAYS 12
 
 #define SYMBOL_NS 250000000ULL        // 250 ms per symbol
 #define GAP_NS 80000000ULL            // 80 ms of silence between symbols
-#define FRAME_HEADER_SET 255
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -124,9 +123,7 @@ int main(int argc, char **argv)
         continue;
       }
 
-      // Frame each payload with a fixed header symbol so the receiver can
-      // distinguish real payloads from noise.
-      transmit_symbol(buf, FRAME_HEADER_SET);
+      transmit_symbol(buf, symbol);
       transmit_symbol(buf, symbol);
   }
 

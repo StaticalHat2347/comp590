@@ -16,14 +16,13 @@
 
 #define CACHE_LINE_BYTES 64
 #define NUM_SYMBOL_SETS 256
-#define SET_STRIDE_BYTES (1 << 16)   // 64 KB keeps the same L2 set index
-#define PROBE_WAYS 24
+#define SET_STRIDE_BYTES (1 << 17)   // 128 KB keeps set index stable on more cache configs
+#define PROBE_WAYS 12
 
-#define FRAME_HEADER_SET 255
-#define MIN_CONFIDENCE_GAP 15
+#define MIN_CONFIDENCE_GAP 4
 #define CALIBRATION_ROUNDS 20
-#define GAP_CONFIRM_SCANS 4
-#define MIN_SYMBOL_VOTES 3
+#define GAP_CONFIRM_SCANS 2
+#define MIN_SYMBOL_VOTES 2
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -66,7 +65,7 @@ static CYCLES calibrate_busy_threshold(void *buf)
 	}
 
 	CYCLES baseline = (CYCLES)(sum_all / count);
-	return (CYCLES)(baseline + 25);
+	return (CYCLES)(baseline + 8);
 }
 
 static int detect_hot_set(void *buf, CYCLES busy_threshold)
@@ -92,9 +91,7 @@ static int detect_hot_set(void *buf, CYCLES busy_threshold)
 	if (best < busy_threshold) {
 		return -1;
 	}
-	if ((best - second) < MIN_CONFIDENCE_GAP) {
-		return -1;
-	}
+	if ((best - second) < MIN_CONFIDENCE_GAP) return -1;
 
 	return best_set;
 }
@@ -127,11 +124,11 @@ int main(int argc, char **argv)
 	printf("Receiver now listening.\n");
 	printf("Busy threshold: %u cycles.\n", busy_threshold);
 
-	bool waiting_for_payload = false;
 	bool collecting_symbol = false;
 	int votes[NUM_SYMBOL_SETS] = {0};
 	int total_votes = 0;
 	int idle_scans = 0;
+	int last_printed = -1;
 
 	while (keep_running) {
 		int hot_set = detect_hot_set(buf, busy_threshold);
@@ -165,12 +162,10 @@ int main(int argc, char **argv)
 		}
 
 		if (total_votes >= MIN_SYMBOL_VOTES && (votes[best_set] * 2) >= total_votes) {
-			if (waiting_for_payload) {
+			if (best_set != last_printed) {
 				printf("Received: %d\n", best_set);
 				fflush(stdout);
-				waiting_for_payload = false;
-			} else if (best_set == FRAME_HEADER_SET) {
-				waiting_for_payload = true;
+				last_printed = best_set;
 			}
 		}
 
