@@ -17,10 +17,10 @@
 #define CACHE_LINE_BYTES 64
 #define NUM_SYMBOL_SETS 256
 #define SET_STRIDE_BYTES (1 << 16)   // 64 KB keeps the same L2 set index
-#define EVICTION_WAYS 16
+#define EVICTION_WAYS 24
 
-#define SYMBOL_NS 120000000ULL        // 120 ms per symbol
-#define GAP_NS 30000000ULL            // 30 ms of silence between symbols
+#define SYMBOL_NS 250000000ULL        // 250 ms per symbol
+#define GAP_NS 80000000ULL            // 80 ms of silence between symbols
 #define FRAME_HEADER_SET 255
 
 static inline uint64_t monotonic_ns(void)
@@ -38,8 +38,9 @@ static inline volatile unsigned char *set_addr(void *buf, int set_idx, int way)
 
 static inline void hammer_set_once(void *buf, uint8_t set_idx)
 {
+  static volatile unsigned char sink = 0;
   for (int way = 0; way < EVICTION_WAYS; way++) {
-    (*set_addr(buf, set_idx, way))++;
+    sink ^= *set_addr(buf, set_idx, way);
   }
 }
 
@@ -132,4 +133,3 @@ int main(int argc, char **argv)
   printf("Sender finished.\n");
   return 0;
 }
-

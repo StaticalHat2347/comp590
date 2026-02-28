@@ -17,13 +17,13 @@
 #define CACHE_LINE_BYTES 64
 #define NUM_SYMBOL_SETS 256
 #define SET_STRIDE_BYTES (1 << 16)   // 64 KB keeps the same L2 set index
-#define PROBE_WAYS 4
+#define PROBE_WAYS 24
 
 #define FRAME_HEADER_SET 255
-#define MIN_CONFIDENCE_GAP 8
-#define CALIBRATION_ROUNDS 120
-#define GAP_CONFIRM_SCANS 8
-#define MIN_SYMBOL_VOTES 6
+#define MIN_CONFIDENCE_GAP 15
+#define CALIBRATION_ROUNDS 20
+#define GAP_CONFIRM_SCANS 4
+#define MIN_SYMBOL_VOTES 3
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -50,21 +50,23 @@ static CYCLES measure_set_latency(void *buf, int set_idx)
 
 static CYCLES calibrate_busy_threshold(void *buf)
 {
-	uint64_t sum_of_max = 0;
+	uint64_t sum_all = 0;
+	uint64_t count = 0;
 
 	for (int round = 0; round < CALIBRATION_ROUNDS; round++) {
-		CYCLES round_max = 0;
 		for (int set_idx = 0; set_idx < NUM_SYMBOL_SETS; set_idx++) {
 			CYCLES lat = measure_set_latency(buf, set_idx);
-			if (lat > round_max) {
-				round_max = lat;
-			}
+			sum_all += lat;
+			count++;
 		}
-		sum_of_max += round_max;
 	}
 
-	CYCLES baseline = (CYCLES)(sum_of_max / CALIBRATION_ROUNDS);
-	return (CYCLES)(baseline + 20);
+	if (count == 0) {
+		return 0;
+	}
+
+	CYCLES baseline = (CYCLES)(sum_all / count);
+	return (CYCLES)(baseline + 25);
 }
 
 static int detect_hot_set(void *buf, CYCLES busy_threshold)
@@ -182,4 +184,3 @@ int main(int argc, char **argv)
 
 	return 0;
 }
-
