@@ -21,9 +21,7 @@
 
 #define SYMBOL_NS 120000000ULL        // 120 ms per symbol
 #define GAP_NS 40000000ULL            // 40 ms of silence between symbols
-#define SYNC_SYMBOL 255
-#define SYNC_REPS 6
-#define PAYLOAD_REPS 6
+#define PAYLOAD_REPS 8
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -124,10 +122,6 @@ int main(int argc, char **argv)
       if (!parse_uint8_line(text_buf, &symbol)) {
         printf("Invalid input. Enter an integer in [0,255].\n");
         continue;
-      }
-
-      for (int i = 0; i < SYNC_REPS; i++) {
-        transmit_symbol(buf, SYNC_SYMBOL);
       }
 
       for (int i = 0; i < PAYLOAD_REPS; i++) {
