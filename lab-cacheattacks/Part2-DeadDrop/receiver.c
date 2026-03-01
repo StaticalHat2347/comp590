@@ -18,15 +18,15 @@
 #define SET_STRIDE_BYTES (1 << 16)
 #define PROBE_WAYS 16
 
-#define CALIBRATION_ROUNDS 40
-#define BUSY_MARGIN 15
-#define GAP_MARGIN 8
+#define CALIBRATION_ROUNDS 20
+#define BUSY_MARGIN 3
+#define GAP_MARGIN 2
 
-#define SEGMENT_IDLE_SCANS 4
-#define SEGMENT_MIN_VOTES 6
+#define SEGMENT_IDLE_SCANS 2
+#define SEGMENT_MIN_VOTES 2
 
-#define BIT0_MARKER 11
-#define BIT1_MARKER 53
+#define BIT0_MARKER 5
+#define BIT1_MARKER 59
 #define PREAMBLE 0xA5
 
 static volatile sig_atomic_t keep_running = 1;

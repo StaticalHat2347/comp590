@@ -18,11 +18,11 @@
 #define SET_STRIDE_BYTES (1 << 16)
 #define EVICTION_WAYS 16
 
-#define SYMBOL_NS 140000000ULL
-#define GAP_NS 50000000ULL
+#define SYMBOL_NS 300000000ULL
+#define GAP_NS 120000000ULL
 
-#define BIT0_MARKER 11
-#define BIT1_MARKER 53
+#define BIT0_MARKER 5
+#define BIT1_MARKER 59
 #define PREAMBLE 0xA5
 
 static inline uint64_t monotonic_ns(void)
