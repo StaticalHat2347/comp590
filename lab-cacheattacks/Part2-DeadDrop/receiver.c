@@ -21,7 +21,7 @@
 #define PAIR_OFFSET 64
 
 #define CALIBRATION_SAMPLES 200
-#define ACTIVE_MARGIN 4
+#define ACTIVE_MARGIN 2
 #define SAMPLE_NS 2000000ULL
 
 #define SYNC_NS 1500000000ULL
@@ -30,6 +30,8 @@
 
 #define SYNC_DETECT_NS 500000000ULL
 #define SYNC_GAP_DETECT_NS 150000000ULL
+#define SYNC_ACTIVE_PCT 60
+#define GAP_INACTIVE_PCT 70
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -120,8 +122,9 @@ int main(int argc, char **argv)
     READ_BITS = 2
   } state = WAIT_SYNC;
 
-  uint64_t active_start = 0;
-  uint64_t inactive_start = 0;
+  uint64_t window_start = 0;
+  int active_samples = 0;
+  int total_samples = 0;
 
   while (keep_running) {
     int diff = measure_diff(buf);
@@ -129,27 +132,49 @@ int main(int argc, char **argv)
     uint64_t now = monotonic_ns();
 
     if (state == WAIT_SYNC) {
+      if (window_start == 0) {
+        window_start = now;
+        active_samples = 0;
+        total_samples = 0;
+      }
+
+      total_samples++;
       if (active) {
-        if (active_start == 0) active_start = now;
-        if ((now - active_start) >= SYNC_DETECT_NS) {
+        active_samples++;
+      }
+
+      if ((now - window_start) >= SYNC_DETECT_NS) {
+        if (total_samples > 0 &&
+            (active_samples * 100) >= (SYNC_ACTIVE_PCT * total_samples)) {
           state = WAIT_SYNC_GAP;
-          inactive_start = 0;
         }
-      } else {
-        active_start = 0;
+        window_start = 0;
       }
       sleep_ns(SAMPLE_NS);
       continue;
     }
 
     if (state == WAIT_SYNC_GAP) {
-      if (!active) {
-        if (inactive_start == 0) inactive_start = now;
-        if ((now - inactive_start) >= SYNC_GAP_DETECT_NS) {
+      if (window_start == 0) {
+        window_start = now;
+        active_samples = 0;
+        total_samples = 0;
+      }
+
+      total_samples++;
+      if (active) {
+        active_samples++;
+      }
+
+      if ((now - window_start) >= SYNC_GAP_DETECT_NS) {
+        int inactive_samples = total_samples - active_samples;
+        if (total_samples > 0 &&
+            (inactive_samples * 100) >= (GAP_INACTIVE_PCT * total_samples)) {
           state = READ_BITS;
+        } else {
+          state = WAIT_SYNC;
         }
-      } else {
-        inactive_start = 0;
+        window_start = 0;
       }
       sleep_ns(SAMPLE_NS);
       continue;
@@ -179,8 +204,9 @@ int main(int argc, char **argv)
       fflush(stdout);
 
       state = WAIT_SYNC;
-      active_start = 0;
-      inactive_start = 0;
+      window_start = 0;
+      active_samples = 0;
+      total_samples = 0;
       continue;
     }
   }
