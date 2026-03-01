@@ -18,12 +18,13 @@
 #define SET_STRIDE_BYTES (1 << 14)
 #define PROBE_WAYS 64
 
-#define CALIBRATION_ROUNDS 20
-#define BUSY_MARGIN 3
-#define GAP_MARGIN 0
+#define CALIBRATION_ROUNDS 30
+#define BUSY_MARGIN 20
+#define GAP_MARGIN 10
 
-#define SEGMENT_IDLE_SCANS 2
-#define SEGMENT_MIN_VOTES 2
+#define SEGMENT_IDLE_SCANS 5
+#define SEGMENT_MIN_VOTES 8
+#define MIN_DOMINANCE_PCT 70
 
 #define BIT0_MARKER 5
 #define BIT1_MARKER 59
@@ -137,6 +138,8 @@ int main(int argc, char **argv)
   bool in_segment = false;
   int idle_scans = 0;
   int total_votes = 0;
+  int prev_hot_symbol = -1;
+  int hot_run_len = 0;
 
   uint8_t stream_reg = 0;
   int payload_bits_left = 0;
@@ -147,19 +150,32 @@ int main(int argc, char **argv)
     CYCLES best, second;
     detect_best_pair(buf, &best_idx, &best, &second);
 
-    bool hot = (best_idx >= 0) && ((best - second) >= gap_threshold);
+    bool hot = (best_idx >= 0) && (best >= busy_threshold) && ((best - second) >= gap_threshold);
     if (hot) {
+      if (best_idx == prev_hot_symbol) {
+        hot_run_len++;
+      } else {
+        prev_hot_symbol = best_idx;
+        hot_run_len = 1;
+      }
+
       if (!in_segment) {
         memset(segment_votes, 0, sizeof(segment_votes));
         total_votes = 0;
         idle_scans = 0;
         in_segment = true;
       }
-      segment_votes[best_idx]++;
-      total_votes++;
+      // Count only stable (consecutive) hot detections to filter noise spikes.
+      if (hot_run_len >= 2) {
+        segment_votes[best_idx]++;
+        total_votes++;
+      }
       idle_scans = 0;
       continue;
     }
+
+    prev_hot_symbol = -1;
+    hot_run_len = 0;
 
     if (!in_segment) {
       continue;
@@ -177,9 +193,8 @@ int main(int argc, char **argv)
       }
     }
 
-    if (total_votes >= SEGMENT_MIN_VOTES) {
-      printf("[debug] symbol=%d votes=%d\n", symbol, segment_votes[symbol]);
-      fflush(stdout);
+    if (total_votes >= SEGMENT_MIN_VOTES &&
+        (segment_votes[symbol] * 100) >= (MIN_DOMINANCE_PCT * total_votes)) {
       int bit = classify_bit_from_symbol(symbol);
       if (bit >= 0) {
         if (payload_bits_left > 0) {
