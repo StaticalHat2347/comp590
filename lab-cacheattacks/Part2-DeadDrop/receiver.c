@@ -32,7 +32,7 @@
 #define SYNC_GAP_DETECT_NS 850000000ULL
 #define SYNC_ACTIVE_PCT 60
 #define GAP_INACTIVE_PCT 80
-#define BIT_ACTIVE_PCT 65
+#define BIT_DIFF_MARGIN 2
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -113,9 +113,11 @@ int main(int argc, char **argv)
   }
   int diff_baseline = baseline_sum / CALIBRATION_SAMPLES;
   int active_threshold = diff_baseline + ACTIVE_MARGIN;
+  int bit_threshold = diff_baseline + BIT_DIFF_MARGIN;
 
   printf("Receiver now listening.\n");
-  printf("Diff baseline: %d, active threshold: %d\n", diff_baseline, active_threshold);
+  printf("Diff baseline: %d, active threshold: %d, bit threshold: %d\n",
+         diff_baseline, active_threshold, bit_threshold);
 
   enum {
     WAIT_SYNC = 0,
@@ -126,6 +128,8 @@ int main(int argc, char **argv)
   uint64_t window_start = 0;
   int active_samples = 0;
   int total_samples = 0;
+  bool have_candidate = false;
+  uint8_t candidate = 0;
 
   while (keep_running) {
     int diff = measure_diff(buf);
@@ -185,24 +189,34 @@ int main(int argc, char **argv)
       uint8_t value = 0;
       for (int b = 0; b < 8; b++) {
         uint64_t slot_start = monotonic_ns();
-        int active_cnt = 0;
+        int64_t diff_sum = 0;
         int total_cnt = 0;
 
         while ((monotonic_ns() - slot_start) < BIT_SLOT_NS) {
           int slot_diff = measure_diff(buf);
-          if (slot_diff >= active_threshold) {
-            active_cnt++;
-          }
+          diff_sum += slot_diff;
           total_cnt++;
           sleep_ns(SAMPLE_NS);
         }
 
-        int bit = ((active_cnt * 100) >= (BIT_ACTIVE_PCT * total_cnt)) ? 1 : 0;
+        int avg_diff = (total_cnt > 0) ? (int)(diff_sum / total_cnt) : diff_baseline;
+        int bit = (avg_diff >= bit_threshold) ? 1 : 0;
         value = (uint8_t)((value << 1) | (uint8_t)bit);
       }
 
-      printf("Received: %u\n", (unsigned)value);
-      fflush(stdout);
+      if (!have_candidate) {
+        candidate = value;
+        have_candidate = true;
+      } else {
+        if (value == candidate) {
+          printf("Received: %u\n", (unsigned)value);
+          fflush(stdout);
+          have_candidate = false;
+        } else {
+          candidate = value;
+          have_candidate = true;
+        }
+      }
 
       state = WAIT_SYNC;
       window_start = 0;

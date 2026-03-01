@@ -136,6 +136,7 @@ int main(int argc, char **argv)
       continue;
     }
     tx_byte(buf, value);
+    tx_byte(buf, value);
   }
 
   printf("Sender finished.\n");
