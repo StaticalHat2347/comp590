@@ -13,22 +13,25 @@
 #define BUFF_SIZE (1 << 21)
 
 #define CACHE_LINE_BYTES 64
+#define SET_STRIDE_BYTES (1 << 14)
+#define PROBE_WAYS 96
 #define LOW_SET_COUNT 64
 #define PAIR_OFFSET 64
-#define SET_STRIDE_BYTES (1 << 14)
-#define PROBE_WAYS 64
 
-#define CALIBRATION_ROUNDS 30
-#define BUSY_MARGIN 20
-#define GAP_MARGIN 10
+#define CALIBRATION_ROUNDS 24
+#define BUSY_MARGIN 8
+#define GAP_MARGIN 4
 
-#define SEGMENT_IDLE_SCANS 5
-#define SEGMENT_MIN_VOTES 8
-#define MIN_DOMINANCE_PCT 70
+#define PRIME_TO_PROBE_WAIT_NS 40000
 
-#define BIT0_MARKER 5
-#define BIT1_MARKER 59
-#define PREAMBLE 0xA5
+#define START_PULSE_NS 800000000ULL
+#define GAP_NS 300000000ULL
+#define PAYLOAD_BASE_NS 400000000ULL
+#define PAYLOAD_STEP_NS 12000000ULL
+
+#define START_TOL_NS 300000000ULL
+#define GAP_TOL_NS 250000000ULL
+#define PAYLOAD_TOL_NS 200000000ULL
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -38,24 +41,42 @@ static void handle_sigint(int sig)
   keep_running = 0;
 }
 
+static inline uint64_t monotonic_ns(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
+}
+
 static inline volatile unsigned char *set_addr(void *buf, int set_idx, int way)
 {
   return (volatile unsigned char *)((unsigned char *)buf +
          (set_idx * CACHE_LINE_BYTES) + (way * SET_STRIDE_BYTES));
 }
 
+static void prime_all_pairs(void *buf)
+{
+  static volatile unsigned char sink = 0;
+  for (int i = 0; i < LOW_SET_COUNT; i++) {
+    int a = i;
+    int b = i + PAIR_OFFSET;
+    for (int way = 0; way < PROBE_WAYS; way++) {
+      sink ^= *set_addr(buf, a, way);
+      sink ^= *set_addr(buf, b, way);
+    }
+  }
+}
+
 static CYCLES measure_pair_latency(void *buf, int low_set_idx)
 {
   uint64_t sum_a = 0;
   uint64_t sum_b = 0;
-  int set_a = low_set_idx;
-  int set_b = low_set_idx + PAIR_OFFSET;
-
+  int a = low_set_idx;
+  int b = low_set_idx + PAIR_OFFSET;
   for (int way = 0; way < PROBE_WAYS; way++) {
-    sum_a += measure_one_block_access_time((ADDR_PTR)set_addr(buf, set_a, way));
-    sum_b += measure_one_block_access_time((ADDR_PTR)set_addr(buf, set_b, way));
+    sum_a += measure_one_block_access_time((ADDR_PTR)set_addr(buf, a, way));
+    sum_b += measure_one_block_access_time((ADDR_PTR)set_addr(buf, b, way));
   }
-
   CYCLES avg_a = (CYCLES)(sum_a / PROBE_WAYS);
   CYCLES avg_b = (CYCLES)(sum_b / PROBE_WAYS);
   return (avg_a > avg_b) ? avg_a : avg_b;
@@ -63,6 +84,10 @@ static CYCLES measure_pair_latency(void *buf, int low_set_idx)
 
 static void detect_best_pair(void *buf, int *best_idx, CYCLES *best, CYCLES *second)
 {
+  prime_all_pairs(buf);
+  struct timespec ts = {.tv_sec = 0, .tv_nsec = PRIME_TO_PROBE_WAIT_NS};
+  nanosleep(&ts, NULL);
+
   *best_idx = -1;
   *best = 0;
   *second = 0;
@@ -80,28 +105,28 @@ static void detect_best_pair(void *buf, int *best_idx, CYCLES *best, CYCLES *sec
 
 static void calibrate_thresholds(void *buf, CYCLES *busy_threshold, CYCLES *gap_threshold)
 {
-  uint64_t best_sum = 0;
-  uint64_t gap_sum = 0;
-  for (int r = 0; r < CALIBRATION_ROUNDS; r++) {
-    int best_idx;
+  uint64_t sum_best = 0;
+  uint64_t sum_gap = 0;
+  for (int i = 0; i < CALIBRATION_ROUNDS; i++) {
+    int idx;
     CYCLES best, second;
-    detect_best_pair(buf, &best_idx, &best, &second);
-    (void)best_idx;
-    best_sum += best;
-    gap_sum += (best > second) ? (best - second) : 0;
+    detect_best_pair(buf, &idx, &best, &second);
+    (void)idx;
+    sum_best += best;
+    sum_gap += (best > second) ? (best - second) : 0;
   }
 
-  CYCLES avg_best = (CYCLES)(best_sum / CALIBRATION_ROUNDS);
-  CYCLES avg_gap = (CYCLES)(gap_sum / CALIBRATION_ROUNDS);
+  CYCLES avg_best = (CYCLES)(sum_best / CALIBRATION_ROUNDS);
+  CYCLES avg_gap = (CYCLES)(sum_gap / CALIBRATION_ROUNDS);
   *busy_threshold = (CYCLES)(avg_best + BUSY_MARGIN);
   *gap_threshold = (CYCLES)(avg_gap + GAP_MARGIN);
 }
 
-static int classify_bit_from_symbol(int symbol_idx)
+static bool in_range_u64(uint64_t x, uint64_t center, uint64_t tol)
 {
-  if (symbol_idx == BIT0_MARKER) return 0;
-  if (symbol_idx == BIT1_MARKER) return 1;
-  return -1;
+  uint64_t lo = (center > tol) ? (center - tol) : 0;
+  uint64_t hi = center + tol;
+  return x >= lo && x <= hi;
 }
 
 int main(int argc, char **argv)
@@ -114,7 +139,7 @@ int main(int argc, char **argv)
     exit(EXIT_FAILURE);
   }
 
-  for (int set_idx = 0; set_idx < (LOW_SET_COUNT + PAIR_OFFSET); set_idx++) {
+  for (int set_idx = 0; set_idx < 128; set_idx++) {
     for (int way = 0; way < PROBE_WAYS; way++) {
       *set_addr(buf, set_idx, way) = 1;
     }
@@ -134,16 +159,15 @@ int main(int argc, char **argv)
   printf("Busy threshold: %u cycles, gap threshold: %u cycles.\n",
          busy_threshold, gap_threshold);
 
-  int segment_votes[LOW_SET_COUNT] = {0};
-  bool in_segment = false;
-  int idle_scans = 0;
-  int total_votes = 0;
-  int prev_hot_symbol = -1;
-  int hot_run_len = 0;
+  enum {
+    WAIT_START_PULSE = 0,
+    WAIT_GAP_AFTER_START = 1,
+    WAIT_PAYLOAD_PULSE = 2
+  } state = WAIT_START_PULSE;
 
-  uint8_t stream_reg = 0;
-  int payload_bits_left = 0;
-  uint8_t payload = 0;
+  bool currently_hot = false;
+  uint64_t hot_start_ns = 0;
+  uint64_t last_hot_end_ns = 0;
 
   while (keep_running) {
     int best_idx;
@@ -151,73 +175,45 @@ int main(int argc, char **argv)
     detect_best_pair(buf, &best_idx, &best, &second);
 
     bool hot = (best_idx >= 0) && (best >= busy_threshold) && ((best - second) >= gap_threshold);
-    if (hot) {
-      if (best_idx == prev_hot_symbol) {
-        hot_run_len++;
-      } else {
-        prev_hot_symbol = best_idx;
-        hot_run_len = 1;
-      }
+    uint64_t now = monotonic_ns();
 
-      if (!in_segment) {
-        memset(segment_votes, 0, sizeof(segment_votes));
-        total_votes = 0;
-        idle_scans = 0;
-        in_segment = true;
-      }
-      // Count only stable (consecutive) hot detections to filter noise spikes.
-      if (hot_run_len >= 2) {
-        segment_votes[best_idx]++;
-        total_votes++;
-      }
-      idle_scans = 0;
+    if (hot && !currently_hot) {
+      currently_hot = true;
+      hot_start_ns = now;
       continue;
     }
 
-    prev_hot_symbol = -1;
-    hot_run_len = 0;
+    if (!hot && currently_hot) {
+      currently_hot = false;
+      uint64_t pulse_ns = now - hot_start_ns;
+      last_hot_end_ns = now;
 
-    if (!in_segment) {
-      continue;
-    }
-
-    idle_scans++;
-    if (idle_scans < SEGMENT_IDLE_SCANS) {
-      continue;
-    }
-
-    int symbol = 0;
-    for (int i = 1; i < LOW_SET_COUNT; i++) {
-      if (segment_votes[i] > segment_votes[symbol]) {
-        symbol = i;
-      }
-    }
-
-    if (total_votes >= SEGMENT_MIN_VOTES &&
-        (segment_votes[symbol] * 100) >= (MIN_DOMINANCE_PCT * total_votes)) {
-      int bit = classify_bit_from_symbol(symbol);
-      if (bit >= 0) {
-        if (payload_bits_left > 0) {
-          payload = (uint8_t)((payload << 1) | (uint8_t)bit);
-          payload_bits_left--;
-          if (payload_bits_left == 0) {
-            printf("Received: %u\n", (unsigned)payload);
-            fflush(stdout);
-            payload = 0;
-          }
-        } else {
-          stream_reg = (uint8_t)((stream_reg << 1) | (uint8_t)bit);
-          if (stream_reg == PREAMBLE) {
-            payload = 0;
-            payload_bits_left = 8;
-          }
+      if (state == WAIT_START_PULSE) {
+        if (in_range_u64(pulse_ns, START_PULSE_NS, START_TOL_NS)) {
+          state = WAIT_GAP_AFTER_START;
         }
+      } else if (state == WAIT_PAYLOAD_PULSE) {
+        if (pulse_ns + PAYLOAD_TOL_NS >= PAYLOAD_BASE_NS) {
+          int64_t delta = (int64_t)pulse_ns - (int64_t)PAYLOAD_BASE_NS;
+          int decoded = (int)((delta + (int64_t)(PAYLOAD_STEP_NS / 2)) / (int64_t)PAYLOAD_STEP_NS);
+          if (decoded < 0) decoded = 0;
+          if (decoded > 255) decoded = 255;
+          printf("Received: %d\n", decoded);
+          fflush(stdout);
+        }
+        state = WAIT_START_PULSE;
       }
+      continue;
     }
 
-    in_segment = false;
-    idle_scans = 0;
-    total_votes = 0;
+    if (state == WAIT_GAP_AFTER_START && !currently_hot) {
+      uint64_t gap_ns = now - last_hot_end_ns;
+      if (in_range_u64(gap_ns, GAP_NS, GAP_TOL_NS)) {
+        state = WAIT_PAYLOAD_PULSE;
+      } else if (gap_ns > (GAP_NS + GAP_TOL_NS)) {
+        state = WAIT_START_PULSE;
+      }
+    }
   }
 
   printf("Receiver finished.\n");
