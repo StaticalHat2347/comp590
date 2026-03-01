@@ -15,12 +15,12 @@
 #define CACHE_LINE_BYTES 64
 #define LOW_SET_COUNT 64
 #define PAIR_OFFSET 64
-#define SET_STRIDE_BYTES (1 << 16)
-#define PROBE_WAYS 16
+#define SET_STRIDE_BYTES (1 << 14)
+#define PROBE_WAYS 64
 
 #define CALIBRATION_ROUNDS 20
 #define BUSY_MARGIN 3
-#define GAP_MARGIN 2
+#define GAP_MARGIN 0
 
 #define SEGMENT_IDLE_SCANS 2
 #define SEGMENT_MIN_VOTES 2
@@ -147,7 +147,7 @@ int main(int argc, char **argv)
     CYCLES best, second;
     detect_best_pair(buf, &best_idx, &best, &second);
 
-    bool hot = (best_idx >= 0) && (best >= busy_threshold) && ((best - second) >= gap_threshold);
+    bool hot = (best_idx >= 0) && ((best - second) >= gap_threshold);
     if (hot) {
       if (!in_segment) {
         memset(segment_votes, 0, sizeof(segment_votes));
@@ -178,6 +178,8 @@ int main(int argc, char **argv)
     }
 
     if (total_votes >= SEGMENT_MIN_VOTES) {
+      printf("[debug] symbol=%d votes=%d\n", symbol, segment_votes[symbol]);
+      fflush(stdout);
       int bit = classify_bit_from_symbol(symbol);
       if (bit >= 0) {
         if (payload_bits_left > 0) {
