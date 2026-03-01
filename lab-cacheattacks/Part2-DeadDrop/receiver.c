@@ -29,9 +29,9 @@
 #define BIT_SLOT_NS 500000000ULL
 
 #define SYNC_DETECT_NS 500000000ULL
-#define SYNC_GAP_DETECT_NS 500000000ULL
+#define SYNC_GAP_DETECT_NS 850000000ULL
 #define SYNC_ACTIVE_PCT 60
-#define GAP_INACTIVE_PCT 70
+#define GAP_INACTIVE_PCT 80
 #define BIT_ACTIVE_PCT 65
 
 static volatile sig_atomic_t keep_running = 1;
