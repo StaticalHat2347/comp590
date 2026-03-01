@@ -25,13 +25,14 @@
 #define SAMPLE_NS 2000000ULL
 
 #define SYNC_NS 1500000000ULL
-#define SYNC_GAP_NS 500000000ULL
-#define BIT_SLOT_NS 350000000ULL
+#define SYNC_GAP_NS 900000000ULL
+#define BIT_SLOT_NS 500000000ULL
 
 #define SYNC_DETECT_NS 500000000ULL
-#define SYNC_GAP_DETECT_NS 150000000ULL
+#define SYNC_GAP_DETECT_NS 500000000ULL
 #define SYNC_ACTIVE_PCT 60
 #define GAP_INACTIVE_PCT 70
+#define BIT_ACTIVE_PCT 65
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -196,7 +197,7 @@ int main(int argc, char **argv)
           sleep_ns(SAMPLE_NS);
         }
 
-        int bit = (active_cnt * 2 > total_cnt) ? 1 : 0;
+        int bit = ((active_cnt * 100) >= (BIT_ACTIVE_PCT * total_cnt)) ? 1 : 0;
         value = (uint8_t)((value << 1) | (uint8_t)bit);
       }
 

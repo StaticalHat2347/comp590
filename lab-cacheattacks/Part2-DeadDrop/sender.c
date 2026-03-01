@@ -20,8 +20,8 @@
 #define PAIR_OFFSET 64
 
 #define SYNC_NS 1500000000ULL
-#define SYNC_GAP_NS 500000000ULL
-#define BIT_SLOT_NS 350000000ULL
+#define SYNC_GAP_NS 900000000ULL
+#define BIT_SLOT_NS 500000000ULL
 #define BYTE_GAP_NS 700000000ULL
 
 static inline uint64_t monotonic_ns(void)
