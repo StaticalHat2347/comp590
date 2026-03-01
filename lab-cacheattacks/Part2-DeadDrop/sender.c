@@ -13,16 +13,16 @@
 #define BUFF_SIZE (1 << 21)
 
 #define CACHE_LINE_BYTES 64
-#define SET_STRIDE_BYTES (1 << 14)
-#define EVICTION_WAYS 96
+#define SET_STRIDE_BYTES (1 << 16)
+#define EVICTION_WAYS 20
 
 #define MARKER_SET 27
 #define PAIR_OFFSET 64
 
-#define START_PULSE_NS 800000000ULL     // 0.8 s
-#define GAP_NS 300000000ULL             // 0.3 s
-#define PAYLOAD_BASE_NS 400000000ULL    // 0.4 s
-#define PAYLOAD_STEP_NS 12000000ULL     // 12 ms per value step
+#define SYNC_NS 1500000000ULL
+#define SYNC_GAP_NS 500000000ULL
+#define BIT_SLOT_NS 350000000ULL
+#define BYTE_GAP_NS 700000000ULL
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -47,20 +47,38 @@ static inline void hammer_pair_once(void *buf, int set_idx)
   }
 }
 
-static void transmit_pulse(void *buf, uint64_t pulse_ns)
+static void tx_active(void *buf, uint64_t ns)
 {
-  uint64_t end_time = monotonic_ns() + pulse_ns;
-  while (monotonic_ns() < end_time) {
+  uint64_t end = monotonic_ns() + ns;
+  while (monotonic_ns() < end) {
     hammer_pair_once(buf, MARKER_SET);
   }
 }
 
-static void sleep_ns(uint64_t ns)
+static void tx_idle(uint64_t ns)
 {
   struct timespec ts;
   ts.tv_sec = (time_t)(ns / 1000000000ULL);
   ts.tv_nsec = (long)(ns % 1000000000ULL);
   nanosleep(&ts, NULL);
+}
+
+static void tx_byte(void *buf, uint8_t value)
+{
+  // Frame sync pulse for receiver alignment.
+  tx_active(buf, SYNC_NS);
+  tx_idle(SYNC_GAP_NS);
+
+  for (int b = 7; b >= 0; b--) {
+    int bit = (value >> b) & 1;
+    if (bit) {
+      tx_active(buf, BIT_SLOT_NS);
+    } else {
+      tx_idle(BIT_SLOT_NS);
+    }
+  }
+
+  tx_idle(BYTE_GAP_NS);
 }
 
 static bool parse_uint8_line(char *line, uint8_t *value)
@@ -78,7 +96,6 @@ static bool parse_uint8_line(char *line, uint8_t *value)
   if (*endptr != '\0') {
     return false;
   }
-
   if (v < 0 || v > 255) {
     return false;
   }
@@ -104,7 +121,6 @@ int main(int argc, char **argv)
   }
 
   printf("Please type an integer in [0,255] per line (or quit).\n");
-
   while (true) {
     char text_buf[128];
     if (fgets(text_buf, sizeof(text_buf), stdin) == NULL) {
@@ -119,15 +135,7 @@ int main(int argc, char **argv)
       printf("Invalid input. Enter an integer in [0,255].\n");
       continue;
     }
-
-    // Start frame pulse
-    transmit_pulse(buf, START_PULSE_NS);
-    sleep_ns(GAP_NS);
-
-    // Payload pulse duration encodes the value.
-    uint64_t payload_ns = PAYLOAD_BASE_NS + ((uint64_t)value * PAYLOAD_STEP_NS);
-    transmit_pulse(buf, payload_ns);
-    sleep_ns(GAP_NS);
+    tx_byte(buf, value);
   }
 
   printf("Sender finished.\n");
