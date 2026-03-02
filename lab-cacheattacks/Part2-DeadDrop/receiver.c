@@ -23,11 +23,12 @@
 #define PRIME_FRACTION_DEN 4
 
 #define CALIBRATION_SAMPLES 120
-#define LATENCY_MARGIN 8
+#define LATENCY_MARGIN 4
 
 #define SYNC_ACTIVE_SLOTS 6
 #define SYNC_GAP_SLOTS 2
 #define PRE_DATA_GUARD_SLOTS 1
+#define SYNC_MIN_ACTIVE 4
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -125,14 +126,14 @@ int main(int argc, char **argv)
 
   while (keep_running) {
     if (state == WAIT_SYNC) {
-      bool active = sample_slot_active(buf, active_threshold);
-      if (active) {
-        active_run++;
-      } else {
-        active_run = 0;
+      int active_cnt = 0;
+      for (int i = 0; i < SYNC_ACTIVE_SLOTS; i++) {
+        if (sample_slot_active(buf, active_threshold)) {
+          active_cnt++;
+        }
       }
 
-      if (active_run >= (SYNC_ACTIVE_SLOTS - 1)) {
+      if (active_cnt >= SYNC_MIN_ACTIVE) {
         state = WAIT_SYNC_GAP;
         inactive_run = 0;
       }
@@ -152,7 +153,7 @@ int main(int argc, char **argv)
       } else if (inactive_run == 0 && active) {
         // If sync gap is not observed, fallback to searching sync.
         state = WAIT_SYNC;
-        active_run = 1;
+        active_run = 0;
       }
       continue;
     }
