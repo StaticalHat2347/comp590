@@ -14,13 +14,14 @@
 
 #define CACHE_LINE_BYTES 64
 #define SET_STRIDE_BYTES (1 << 16)
-#define EVICTION_WAYS 32
+#define EVICTION_WAYS 64
 
 #define MARKER_SET 27
 
 #define SLOT_NS 120000000ULL
 #define SYNC_ACTIVE_SLOTS 6
 #define SYNC_GAP_SLOTS 2
+#define PRE_DATA_GUARD_SLOTS 1
 #define BYTE_GAP_SLOTS 4
 
 static inline uint64_t monotonic_ns(void)
@@ -67,6 +68,7 @@ static void tx_byte(void *buf, uint8_t value)
     tx_active_slot(buf);
   }
   tx_idle_slots(SYNC_GAP_SLOTS);
+  tx_idle_slots(PRE_DATA_GUARD_SLOTS);
 
   for (int b = 7; b >= 0; b--) {
     int bit = (value >> b) & 1;

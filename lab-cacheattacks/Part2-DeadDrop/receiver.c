@@ -23,10 +23,11 @@
 #define PRIME_FRACTION_DEN 4
 
 #define CALIBRATION_SAMPLES 120
-#define LATENCY_MARGIN 18
+#define LATENCY_MARGIN 8
 
 #define SYNC_ACTIVE_SLOTS 6
 #define SYNC_GAP_SLOTS 2
+#define PRE_DATA_GUARD_SLOTS 1
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -157,6 +158,12 @@ int main(int argc, char **argv)
     }
 
     if (state == READ_BITS) {
+      // Skip guard idle slots between sync and payload to avoid
+      // classifying residual sync activity as the first data bit.
+      for (int g = 0; g < PRE_DATA_GUARD_SLOTS; g++) {
+        (void)sample_slot_active(buf, active_threshold);
+      }
+
       uint8_t value = 0;
       for (int b = 0; b < 8; b++) {
         bool active = sample_slot_active(buf, active_threshold);
