@@ -14,24 +14,19 @@
 
 #define CACHE_LINE_BYTES 64
 #define SET_STRIDE_BYTES (1 << 16)
-#define PROBE_WAYS 20
+#define PROBE_WAYS 32
 
 #define MARKER_SET 27
-#define PAIR_OFFSET 64
 
-#define CALIBRATION_SAMPLES 200
-#define ACTIVE_MARGIN 1
-#define SAMPLE_NS 2000000ULL
+#define SLOT_NS 120000000ULL
+#define PRIME_FRACTION_NUM 3
+#define PRIME_FRACTION_DEN 4
 
-#define SYNC_NS 1500000000ULL
-#define SYNC_GAP_NS 900000000ULL
-#define BIT_SLOT_NS 500000000ULL
+#define CALIBRATION_SAMPLES 120
+#define LATENCY_MARGIN 18
 
-#define SYNC_DETECT_NS 300000000ULL
-#define SYNC_GAP_DETECT_NS 300000000ULL
-#define SYNC_ACTIVE_PCT 45
-#define GAP_INACTIVE_PCT 55
-#define BIT_DIFF_MARGIN 1
+#define SYNC_ACTIVE_SLOTS 6
+#define SYNC_GAP_SLOTS 2
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -39,13 +34,6 @@ static void handle_sigint(int sig)
 {
   (void)sig;
   keep_running = 0;
-}
-
-static inline uint64_t monotonic_ns(void)
-{
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
 }
 
 static inline void sleep_ns(uint64_t ns)
@@ -62,24 +50,31 @@ static inline volatile unsigned char *set_addr(void *buf, int set_idx, int way)
          (set_idx * CACHE_LINE_BYTES) + (way * SET_STRIDE_BYTES));
 }
 
-static CYCLES measure_pair_latency(void *buf, int set_idx)
+static void prime_set(void *buf, int set_idx)
 {
-  uint64_t sum_a = 0;
-  uint64_t sum_b = 0;
-  int paired = set_idx + PAIR_OFFSET;
+  static volatile unsigned char sink = 0;
   for (int way = 0; way < PROBE_WAYS; way++) {
-    sum_a += measure_one_block_access_time((ADDR_PTR)set_addr(buf, set_idx, way));
-    sum_b += measure_one_block_access_time((ADDR_PTR)set_addr(buf, paired, way));
+    sink ^= *set_addr(buf, set_idx, way);
   }
-  CYCLES avg_a = (CYCLES)(sum_a / PROBE_WAYS);
-  CYCLES avg_b = (CYCLES)(sum_b / PROBE_WAYS);
-  return (avg_a > avg_b) ? avg_a : avg_b;
 }
 
-static int measure_diff(void *buf)
+static CYCLES probe_set_latency(void *buf, int set_idx)
 {
-  CYCLES marker = measure_pair_latency(buf, MARKER_SET);
-  return (int)marker;
+  uint64_t sum = 0;
+  for (int way = 0; way < PROBE_WAYS; way++) {
+    sum += measure_one_block_access_time((ADDR_PTR)set_addr(buf, set_idx, way));
+  }
+  return (CYCLES)(sum / PROBE_WAYS);
+}
+
+static bool sample_slot_active(void *buf, CYCLES threshold)
+{
+  prime_set(buf, MARKER_SET);
+  sleep_ns((SLOT_NS * PRIME_FRACTION_NUM) / PRIME_FRACTION_DEN);
+  CYCLES lat = probe_set_latency(buf, MARKER_SET);
+  uint64_t rem = SLOT_NS - ((SLOT_NS * PRIME_FRACTION_NUM) / PRIME_FRACTION_DEN);
+  sleep_ns(rem);
+  return lat >= threshold;
 }
 
 int main(int argc, char **argv)
@@ -92,7 +87,7 @@ int main(int argc, char **argv)
     exit(EXIT_FAILURE);
   }
 
-  for (int set_idx = 0; set_idx < 128; set_idx++) {
+  for (int set_idx = 0; set_idx < 64; set_idx++) {
     for (int way = 0; way < PROBE_WAYS; way++) {
       *set_addr(buf, set_idx, way) = 1;
     }
@@ -104,18 +99,22 @@ int main(int argc, char **argv)
 
   signal(SIGINT, handle_sigint);
 
-  int baseline_sum = 0;
+  uint64_t sum = 0;
   for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
-    baseline_sum += measure_diff(buf);
-    sleep_ns(SAMPLE_NS);
+    prime_set(buf, MARKER_SET);
+    CYCLES lat = probe_set_latency(buf, MARKER_SET);
+    sum += lat;
+    sleep_ns(1000000ULL);
   }
-  int latency_baseline = baseline_sum / CALIBRATION_SAMPLES;
-  int active_threshold = latency_baseline + ACTIVE_MARGIN;
-  int bit_threshold = latency_baseline + BIT_DIFF_MARGIN;
+
+  CYCLES baseline = (CYCLES)(sum / CALIBRATION_SAMPLES);
+  CYCLES active_threshold = (CYCLES)(baseline + LATENCY_MARGIN);
 
   printf("Receiver now listening.\n");
-  printf("Latency baseline: %d, active threshold: %d, bit threshold: %d\n",
-         latency_baseline, active_threshold, bit_threshold);
+  printf("Latency baseline: %u, active threshold: %u\n", baseline, active_threshold);
+
+  int active_run = 0;
+  int inactive_run = 0;
 
   enum {
     WAIT_SYNC = 0,
@@ -123,89 +122,53 @@ int main(int argc, char **argv)
     READ_BITS = 2
   } state = WAIT_SYNC;
 
-  uint64_t window_start = 0;
-  int active_samples = 0;
-  int total_samples = 0;
   while (keep_running) {
-    int diff = measure_diff(buf);
-    bool active = (diff >= active_threshold);
-    uint64_t now = monotonic_ns();
-
     if (state == WAIT_SYNC) {
-      if (window_start == 0) {
-        window_start = now;
-        active_samples = 0;
-        total_samples = 0;
-      }
-
-      total_samples++;
+      bool active = sample_slot_active(buf, active_threshold);
       if (active) {
-        active_samples++;
+        active_run++;
+      } else {
+        active_run = 0;
       }
 
-      if ((now - window_start) >= SYNC_DETECT_NS) {
-        if (total_samples > 0 &&
-            (active_samples * 100) >= (SYNC_ACTIVE_PCT * total_samples)) {
-          state = WAIT_SYNC_GAP;
-        }
-        window_start = 0;
+      if (active_run >= (SYNC_ACTIVE_SLOTS - 1)) {
+        state = WAIT_SYNC_GAP;
+        inactive_run = 0;
       }
-      sleep_ns(SAMPLE_NS);
       continue;
     }
 
     if (state == WAIT_SYNC_GAP) {
-      if (window_start == 0) {
-        window_start = now;
-        active_samples = 0;
-        total_samples = 0;
+      bool active = sample_slot_active(buf, active_threshold);
+      if (!active) {
+        inactive_run++;
+      } else {
+        inactive_run = 0;
       }
 
-      total_samples++;
-      if (active) {
-        active_samples++;
+      if (inactive_run >= SYNC_GAP_SLOTS) {
+        state = READ_BITS;
+      } else if (inactive_run == 0 && active) {
+        // If sync gap is not observed, fallback to searching sync.
+        state = WAIT_SYNC;
+        active_run = 1;
       }
-
-      if ((now - window_start) >= SYNC_GAP_DETECT_NS) {
-        int inactive_samples = total_samples - active_samples;
-        if (total_samples > 0 &&
-            (inactive_samples * 100) >= (GAP_INACTIVE_PCT * total_samples)) {
-          state = READ_BITS;
-        } else {
-          state = WAIT_SYNC;
-        }
-        window_start = 0;
-      }
-      sleep_ns(SAMPLE_NS);
       continue;
     }
 
     if (state == READ_BITS) {
       uint8_t value = 0;
       for (int b = 0; b < 8; b++) {
-        uint64_t slot_start = monotonic_ns();
-        int64_t diff_sum = 0;
-        int total_cnt = 0;
-
-        while ((monotonic_ns() - slot_start) < BIT_SLOT_NS) {
-          int slot_diff = measure_diff(buf);
-          diff_sum += slot_diff;
-          total_cnt++;
-          sleep_ns(SAMPLE_NS);
-        }
-
-        int avg_diff = (total_cnt > 0) ? (int)(diff_sum / total_cnt) : latency_baseline;
-        int bit = (avg_diff >= bit_threshold) ? 1 : 0;
-        value = (uint8_t)((value << 1) | (uint8_t)bit);
+        bool active = sample_slot_active(buf, active_threshold);
+        value = (uint8_t)((value << 1) | (active ? 1 : 0));
       }
 
       printf("Received: %u\n", (unsigned)value);
       fflush(stdout);
 
       state = WAIT_SYNC;
-      window_start = 0;
-      active_samples = 0;
-      total_samples = 0;
+      active_run = 0;
+      inactive_run = 0;
       continue;
     }
   }

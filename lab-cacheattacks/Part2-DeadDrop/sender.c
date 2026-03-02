@@ -17,12 +17,11 @@
 #define EVICTION_WAYS 32
 
 #define MARKER_SET 27
-#define PAIR_OFFSET 64
 
-#define SYNC_NS 1500000000ULL
-#define SYNC_GAP_NS 900000000ULL
-#define BIT_SLOT_NS 500000000ULL
-#define BYTE_GAP_NS 700000000ULL
+#define SLOT_NS 120000000ULL
+#define SYNC_ACTIVE_SLOTS 6
+#define SYNC_GAP_SLOTS 2
+#define BYTE_GAP_SLOTS 4
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -37,48 +36,48 @@ static inline volatile unsigned char *set_addr(void *buf, int set_idx, int way)
          (set_idx * CACHE_LINE_BYTES) + (way * SET_STRIDE_BYTES));
 }
 
-static inline void hammer_pair_once(void *buf, int set_idx)
+static inline void hammer_set_once(void *buf, int set_idx)
 {
   static volatile unsigned char sink = 0;
-  int paired = set_idx + PAIR_OFFSET;
   for (int way = 0; way < EVICTION_WAYS; way++) {
     sink ^= *set_addr(buf, set_idx, way);
-    sink ^= *set_addr(buf, paired, way);
   }
 }
 
-static void tx_active(void *buf, uint64_t ns)
+static void tx_active_slot(void *buf)
 {
-  uint64_t end = monotonic_ns() + ns;
+  uint64_t end = monotonic_ns() + SLOT_NS;
   while (monotonic_ns() < end) {
-    hammer_pair_once(buf, MARKER_SET);
+    hammer_set_once(buf, MARKER_SET);
   }
 }
 
-static void tx_idle(uint64_t ns)
+static void tx_idle_slots(int slots)
 {
   struct timespec ts;
-  ts.tv_sec = (time_t)(ns / 1000000000ULL);
-  ts.tv_nsec = (long)(ns % 1000000000ULL);
+  uint64_t total = SLOT_NS * (uint64_t)slots;
+  ts.tv_sec = (time_t)(total / 1000000000ULL);
+  ts.tv_nsec = (long)(total % 1000000000ULL);
   nanosleep(&ts, NULL);
 }
 
 static void tx_byte(void *buf, uint8_t value)
 {
-  // Frame sync pulse for receiver alignment.
-  tx_active(buf, SYNC_NS);
-  tx_idle(SYNC_GAP_NS);
+  for (int i = 0; i < SYNC_ACTIVE_SLOTS; i++) {
+    tx_active_slot(buf);
+  }
+  tx_idle_slots(SYNC_GAP_SLOTS);
 
   for (int b = 7; b >= 0; b--) {
     int bit = (value >> b) & 1;
     if (bit) {
-      tx_active(buf, BIT_SLOT_NS);
+      tx_active_slot(buf);
     } else {
-      tx_idle(BIT_SLOT_NS);
+      tx_idle_slots(1);
     }
   }
 
-  tx_idle(BYTE_GAP_NS);
+  tx_idle_slots(BYTE_GAP_SLOTS);
 }
 
 static bool parse_uint8_line(char *line, uint8_t *value)
@@ -114,7 +113,7 @@ int main(int argc, char **argv)
     exit(EXIT_FAILURE);
   }
 
-  for (int set_idx = 0; set_idx < 128; set_idx++) {
+  for (int set_idx = 0; set_idx < 64; set_idx++) {
     for (int way = 0; way < EVICTION_WAYS; way++) {
       *set_addr(buf, set_idx, way) = 1;
     }
@@ -135,7 +134,7 @@ int main(int argc, char **argv)
       printf("Invalid input. Enter an integer in [0,255].\n");
       continue;
     }
-    tx_byte(buf, value);
+
     tx_byte(buf, value);
   }
 
