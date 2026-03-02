@@ -20,18 +20,18 @@
 #define PAIR_OFFSET 64
 
 #define CALIBRATION_SAMPLES 200
-#define ACTIVE_MARGIN 6
+#define ACTIVE_MARGIN 1
 #define SAMPLE_NS 2000000ULL
 
 #define SYNC_NS 1500000000ULL
 #define SYNC_GAP_NS 900000000ULL
 #define BIT_SLOT_NS 500000000ULL
 
-#define SYNC_DETECT_NS 500000000ULL
-#define SYNC_GAP_DETECT_NS 850000000ULL
-#define SYNC_ACTIVE_PCT 60
-#define GAP_INACTIVE_PCT 80
-#define BIT_DIFF_MARGIN 4
+#define SYNC_DETECT_NS 300000000ULL
+#define SYNC_GAP_DETECT_NS 300000000ULL
+#define SYNC_ACTIVE_PCT 45
+#define GAP_INACTIVE_PCT 55
+#define BIT_DIFF_MARGIN 1
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -126,9 +126,6 @@ int main(int argc, char **argv)
   uint64_t window_start = 0;
   int active_samples = 0;
   int total_samples = 0;
-  bool have_candidate = false;
-  uint8_t candidate = 0;
-
   while (keep_running) {
     int diff = measure_diff(buf);
     bool active = (diff >= active_threshold);
@@ -202,19 +199,8 @@ int main(int argc, char **argv)
         value = (uint8_t)((value << 1) | (uint8_t)bit);
       }
 
-      if (!have_candidate) {
-        candidate = value;
-        have_candidate = true;
-      } else {
-        if (value == candidate) {
-          printf("Received: %u\n", (unsigned)value);
-          fflush(stdout);
-          have_candidate = false;
-        } else {
-          candidate = value;
-          have_candidate = true;
-        }
-      }
+      printf("Received: %u\n", (unsigned)value);
+      fflush(stdout);
 
       state = WAIT_SYNC;
       window_start = 0;
