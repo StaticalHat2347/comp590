@@ -14,7 +14,7 @@
 
 #define CACHE_LINE_BYTES 64
 #define SET_STRIDE_BYTES (1 << 16)
-#define EVICTION_WAYS 20
+#define EVICTION_WAYS 32
 
 #define MARKER_SET 27
 #define PAIR_OFFSET 64

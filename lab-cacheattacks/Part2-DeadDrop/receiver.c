@@ -17,11 +17,10 @@
 #define PROBE_WAYS 20
 
 #define MARKER_SET 27
-#define CONTROL_SET 11
 #define PAIR_OFFSET 64
 
 #define CALIBRATION_SAMPLES 200
-#define ACTIVE_MARGIN 2
+#define ACTIVE_MARGIN 6
 #define SAMPLE_NS 2000000ULL
 
 #define SYNC_NS 1500000000ULL
@@ -32,7 +31,7 @@
 #define SYNC_GAP_DETECT_NS 850000000ULL
 #define SYNC_ACTIVE_PCT 60
 #define GAP_INACTIVE_PCT 80
-#define BIT_DIFF_MARGIN 2
+#define BIT_DIFF_MARGIN 4
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -80,8 +79,7 @@ static CYCLES measure_pair_latency(void *buf, int set_idx)
 static int measure_diff(void *buf)
 {
   CYCLES marker = measure_pair_latency(buf, MARKER_SET);
-  CYCLES control = measure_pair_latency(buf, CONTROL_SET);
-  return (int)marker - (int)control;
+  return (int)marker;
 }
 
 int main(int argc, char **argv)
@@ -111,13 +109,13 @@ int main(int argc, char **argv)
     baseline_sum += measure_diff(buf);
     sleep_ns(SAMPLE_NS);
   }
-  int diff_baseline = baseline_sum / CALIBRATION_SAMPLES;
-  int active_threshold = diff_baseline + ACTIVE_MARGIN;
-  int bit_threshold = diff_baseline + BIT_DIFF_MARGIN;
+  int latency_baseline = baseline_sum / CALIBRATION_SAMPLES;
+  int active_threshold = latency_baseline + ACTIVE_MARGIN;
+  int bit_threshold = latency_baseline + BIT_DIFF_MARGIN;
 
   printf("Receiver now listening.\n");
-  printf("Diff baseline: %d, active threshold: %d, bit threshold: %d\n",
-         diff_baseline, active_threshold, bit_threshold);
+  printf("Latency baseline: %d, active threshold: %d, bit threshold: %d\n",
+         latency_baseline, active_threshold, bit_threshold);
 
   enum {
     WAIT_SYNC = 0,
@@ -199,7 +197,7 @@ int main(int argc, char **argv)
           sleep_ns(SAMPLE_NS);
         }
 
-        int avg_diff = (total_cnt > 0) ? (int)(diff_sum / total_cnt) : diff_baseline;
+        int avg_diff = (total_cnt > 0) ? (int)(diff_sum / total_cnt) : latency_baseline;
         int bit = (avg_diff >= bit_threshold) ? 1 : 0;
         value = (uint8_t)((value << 1) | (uint8_t)bit);
       }
