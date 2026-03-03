@@ -24,9 +24,9 @@
 #define BIT_REPS 3
 
 #define CALIBRATION_SAMPLES 50
-#define MIN_MARGIN_NS 5000ULL
-#define MAX_MARGIN_NS 60000ULL
-#define NOISE_PAD_NS 4000ULL
+#define MIN_MARGIN_CYCLES 10000ULL
+#define MAX_MARGIN_CYCLES 300000ULL
+#define NOISE_PAD_CYCLES 5000ULL
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -51,37 +51,36 @@ static inline void sleep_ns(uint64_t ns)
   nanosleep(&ts, NULL);
 }
 
-static uint64_t probe_once_ns(volatile unsigned char *buf)
+static uint64_t probe_once_cycles(volatile unsigned char *buf)
 {
-  static volatile unsigned char sink = 0;
   unsigned idx = 7;
-  uint64_t start = monotonic_ns();
+  uint64_t total_cycles = 0;
 
   for (int i = 0; i < PROBE_TOUCHES; i++) {
     idx = (idx * 1103515245u + 12345u) & (WORKING_SET_LINES - 1);
-    sink ^= buf[idx * CACHE_LINE_BYTES];
+    total_cycles += (uint64_t)measure_one_block_access_time((ADDR_PTR)(buf + idx * CACHE_LINE_BYTES));
   }
 
-  return monotonic_ns() - start;
+  return total_cycles;
 }
 
-static uint64_t sample_slot_ns(volatile unsigned char *buf)
+static uint64_t sample_slot_cycles(volatile unsigned char *buf)
 {
   uint64_t slot_start = monotonic_ns();
-  uint64_t busy_ns = probe_once_ns(buf);
+  uint64_t busy_cycles = probe_once_cycles(buf);
   uint64_t elapsed_ns = monotonic_ns() - slot_start;
 
   if (elapsed_ns < SLOT_NS) {
     sleep_ns(SLOT_NS - elapsed_ns);
   }
 
-  return busy_ns;
+  return busy_cycles;
 }
 
-static bool sample_slot_active(volatile unsigned char *buf, uint64_t active_threshold_ns)
+static bool sample_slot_active(volatile unsigned char *buf, uint64_t active_threshold_cycles)
 {
-  uint64_t busy_ns = sample_slot_ns(buf);
-  return busy_ns >= active_threshold_ns;
+  uint64_t busy_cycles = sample_slot_cycles(buf);
+  return busy_cycles >= active_threshold_cycles;
 }
 
 int main(int argc, char **argv)
@@ -104,36 +103,37 @@ int main(int argc, char **argv)
 
   signal(SIGINT, handle_sigint);
 
-  uint64_t sum_busy = 0;
-  uint64_t max_busy = 0;
+  uint64_t sum_busy_cycles = 0;
+  uint64_t max_busy_cycles = 0;
   for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
-    uint64_t busy_ns = sample_slot_ns(buf);
-    sum_busy += busy_ns;
-    if (busy_ns > max_busy) {
-      max_busy = busy_ns;
+    uint64_t busy_cycles = sample_slot_cycles(buf);
+    sum_busy_cycles += busy_cycles;
+    if (busy_cycles > max_busy_cycles) {
+      max_busy_cycles = busy_cycles;
     }
   }
 
-  uint64_t baseline_ns = sum_busy / CALIBRATION_SAMPLES;
-  uint64_t spread_ns = (max_busy > baseline_ns) ? (max_busy - baseline_ns) : 0;
-  uint64_t margin_ns = (spread_ns / 3) + 6000ULL;
-  if (margin_ns < MIN_MARGIN_NS) {
-    margin_ns = MIN_MARGIN_NS;
+  uint64_t baseline_cycles = sum_busy_cycles / CALIBRATION_SAMPLES;
+  uint64_t spread_cycles =
+      (max_busy_cycles > baseline_cycles) ? (max_busy_cycles - baseline_cycles) : 0;
+  uint64_t margin_cycles = (spread_cycles / 3) + MIN_MARGIN_CYCLES;
+  if (margin_cycles < MIN_MARGIN_CYCLES) {
+    margin_cycles = MIN_MARGIN_CYCLES;
   }
-  if (margin_ns > MAX_MARGIN_NS) {
-    margin_ns = MAX_MARGIN_NS;
+  if (margin_cycles > MAX_MARGIN_CYCLES) {
+    margin_cycles = MAX_MARGIN_CYCLES;
   }
 
-  uint64_t active_threshold_ns = baseline_ns + margin_ns;
-  if (active_threshold_ns < max_busy + NOISE_PAD_NS) {
-    active_threshold_ns = max_busy + NOISE_PAD_NS;
+  uint64_t active_threshold_cycles = baseline_cycles + margin_cycles;
+  if (active_threshold_cycles < max_busy_cycles + NOISE_PAD_CYCLES) {
+    active_threshold_cycles = max_busy_cycles + NOISE_PAD_CYCLES;
   }
 
   printf("Receiver now listening.\n");
-  printf("Busy baseline: %llu ns, active threshold: %llu ns, max idle: %llu ns\n",
-         (unsigned long long)baseline_ns,
-         (unsigned long long)active_threshold_ns,
-         (unsigned long long)max_busy);
+  printf("Busy baseline: %llu cycles, active threshold: %llu cycles, max idle: %llu cycles\n",
+         (unsigned long long)baseline_cycles,
+         (unsigned long long)active_threshold_cycles,
+         (unsigned long long)max_busy_cycles);
 
   enum {
     WAIT_PREAMBLE = 0,
@@ -145,7 +145,7 @@ int main(int argc, char **argv)
     if (state == WAIT_PREAMBLE) {
       int active_cnt = 0;
       for (int i = 0; i < PREAMBLE_SLOTS; i++) {
-        if (sample_slot_active(buf, active_threshold_ns)) {
+        if (sample_slot_active(buf, active_threshold_cycles)) {
           active_cnt++;
         }
       }
@@ -159,7 +159,7 @@ int main(int argc, char **argv)
     if (state == WAIT_GAP) {
       int gap_active = 0;
       for (int i = 0; i < GAP_SLOTS; i++) {
-        if (sample_slot_active(buf, active_threshold_ns)) {
+        if (sample_slot_active(buf, active_threshold_cycles)) {
           gap_active++;
         }
       }
@@ -178,7 +178,7 @@ int main(int argc, char **argv)
       for (int b = 0; b < 8; b++) {
         int bit_active = 0;
         for (int r = 0; r < BIT_REPS; r++) {
-          if (sample_slot_active(buf, active_threshold_ns)) {
+          if (sample_slot_active(buf, active_threshold_cycles)) {
             bit_active++;
           }
         }
