@@ -10,22 +10,15 @@
 #define MAP_HUGETLB 0
 #endif
 
-#define BUFF_SIZE (1 << 21)
-
+#define BUFF_SIZE (1 << 22)
 #define CACHE_LINE_BYTES 64
-#define SET_STRIDE_BYTES (1 << 16)
-#define EVICTION_WAYS 24
-#define WAY_STEP 7
+#define WORKING_SET_LINES (BUFF_SIZE / CACHE_LINE_BYTES)
 
-#define NIBBLE_BASE_SET 8
-#define START_SET 50
-#define SEP_SET 51
-#define END_SET 52
-
-#define SYMBOL_ACTIVE_NS 120000000ULL
-#define SYMBOL_GAP_NS 35000000ULL
-#define FRAME_REPEAT_GAP_NS 90000000ULL
-#define FRAME_REPETITIONS 2
+#define SLOT_NS 180000000ULL
+#define PREAMBLE_SLOTS 6
+#define GAP_SLOTS 2
+#define BIT_REPS 2
+#define FRAME_GAP_SLOTS 3
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -42,47 +35,48 @@ static inline void sleep_ns(uint64_t ns)
   nanosleep(&ts, NULL);
 }
 
-static inline volatile unsigned char *set_addr(void *buf, int set_idx, int way)
-{
-  return (volatile unsigned char *)((unsigned char *)buf +
-         (set_idx * CACHE_LINE_BYTES) + (way * SET_STRIDE_BYTES));
-}
-
-static inline void hammer_set_once(void *buf, int set_idx)
+static void tx_active_slot(volatile unsigned char *buf)
 {
   static volatile unsigned char sink = 0;
-  for (int i = 0; i < EVICTION_WAYS; i++) {
-    int way = (i * WAY_STEP) % EVICTION_WAYS;
-    sink ^= *set_addr(buf, set_idx, way);
-  }
-}
+  uint64_t end_ns = monotonic_ns() + SLOT_NS;
+  unsigned idx = 1;
 
-static void tx_symbol(void *buf, int set_idx)
-{
-  uint64_t end_ns = monotonic_ns() + SYMBOL_ACTIVE_NS;
   while (monotonic_ns() < end_ns) {
-    hammer_set_once(buf, set_idx);
+    for (int i = 0; i < 4096; i++) {
+      idx = (idx * 1103515245u + 12345u) & (WORKING_SET_LINES - 1);
+      sink ^= buf[idx * CACHE_LINE_BYTES];
+    }
   }
-  sleep_ns(SYMBOL_GAP_NS);
 }
 
-static void tx_frame(void *buf, uint8_t value)
+static void tx_idle_slot(void)
 {
-  int high = (value >> 4) & 0xF;
-  int low = value & 0xF;
-  int symbols[5] = {
-    START_SET,
-    NIBBLE_BASE_SET + high,
-    SEP_SET,
-    NIBBLE_BASE_SET + low,
-    END_SET
-  };
+  sleep_ns(SLOT_NS);
+}
 
-  for (int rep = 0; rep < FRAME_REPETITIONS; rep++) {
-    for (int i = 0; i < 5; i++) {
-      tx_symbol(buf, symbols[i]);
+static void tx_byte(volatile unsigned char *buf, uint8_t value)
+{
+  for (int i = 0; i < PREAMBLE_SLOTS; i++) {
+    tx_active_slot(buf);
+  }
+
+  for (int i = 0; i < GAP_SLOTS; i++) {
+    tx_idle_slot();
+  }
+
+  for (int b = 7; b >= 0; b--) {
+    int bit = (value >> b) & 1;
+    for (int r = 0; r < BIT_REPS; r++) {
+      if (bit) {
+        tx_active_slot(buf);
+      } else {
+        tx_idle_slot();
+      }
     }
-    sleep_ns(FRAME_REPEAT_GAP_NS);
+  }
+
+  for (int i = 0; i < FRAME_GAP_SLOTS; i++) {
+    tx_idle_slot();
   }
 }
 
@@ -98,10 +92,7 @@ static bool parse_uint8_line(char *line, uint8_t *value)
   while (*endptr == ' ' || *endptr == '\t' || *endptr == '\r' || *endptr == '\n') {
     endptr++;
   }
-  if (*endptr != '\0') {
-    return false;
-  }
-  if (v < 0 || v > 255) {
+  if (*endptr != '\0' || v < 0 || v > 255) {
     return false;
   }
 
@@ -112,20 +103,15 @@ static bool parse_uint8_line(char *line, uint8_t *value)
 int main(int argc, char **argv)
 {
   int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
-  void *buf = mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
-  if (buf == (void *)-1 && MAP_HUGETLB != 0) {
-    mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE;
-    buf = mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
-  }
-  if (buf == (void *)-1) {
+  volatile unsigned char *buf =
+      (volatile unsigned char *)mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
+  if ((void *)buf == (void *)-1) {
     perror("mmap() error\n");
     exit(EXIT_FAILURE);
   }
 
-  for (int set_idx = 0; set_idx < 64; set_idx++) {
-    for (int way = 0; way < EVICTION_WAYS; way++) {
-      *set_addr(buf, set_idx, way) = 1;
-    }
+  for (int i = 0; i < BUFF_SIZE; i += CACHE_LINE_BYTES) {
+    buf[i] = (unsigned char)(i & 0xFF);
   }
 
   printf("Please type an integer in [0,255] per line (or quit).\n");
@@ -144,7 +130,7 @@ int main(int argc, char **argv)
       continue;
     }
 
-    tx_frame(buf, value);
+    tx_byte(buf, value);
   }
 
   printf("Sender finished.\n");

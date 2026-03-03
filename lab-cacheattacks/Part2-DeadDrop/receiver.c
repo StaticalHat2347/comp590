@@ -10,27 +10,21 @@
 #define MAP_HUGETLB 0
 #endif
 
-#define BUFF_SIZE (1 << 21)
-
+#define BUFF_SIZE (1 << 22)
 #define CACHE_LINE_BYTES 64
-#define SET_STRIDE_BYTES (1 << 16)
-#define PROBE_WAYS 24
-#define WAY_STEP 7
+#define WORKING_SET_LINES (BUFF_SIZE / CACHE_LINE_BYTES)
 
-#define NIBBLE_BASE_SET 8
-#define START_SET 50
-#define SEP_SET 51
-#define END_SET 52
+#define SLOT_NS 180000000ULL
+#define PROBE_TOUCHES 4096
 
-#define PROBE_DELAY_NS 600000ULL
+#define PREAMBLE_SLOTS 6
+#define PREAMBLE_MIN_ACTIVE 5
+#define GAP_SLOTS 2
+#define GAP_MAX_ACTIVE 0
+#define BIT_REPS 2
 
-#define CALIBRATION_SAMPLES 140
-#define DIFF_MARGIN 5
-#define MIN_DIFF_THRESHOLD 3
-#define DOMINANCE_MARGIN 2
-
-#define MIN_SEGMENT_RUN 4
-#define DEDUPE_WINDOW_NS 1400000000ULL
+#define CALIBRATION_SAMPLES 50
+#define MIN_MARGIN_NS 250000ULL
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -55,109 +49,51 @@ static inline void sleep_ns(uint64_t ns)
   nanosleep(&ts, NULL);
 }
 
-static inline volatile unsigned char *set_addr(void *buf, int set_idx, int way)
-{
-  return (volatile unsigned char *)((unsigned char *)buf +
-         (set_idx * CACHE_LINE_BYTES) + (way * SET_STRIDE_BYTES));
-}
-
-static void prime_set(void *buf, int set_idx)
+static uint64_t probe_once_ns(volatile unsigned char *buf)
 {
   static volatile unsigned char sink = 0;
-  for (int i = 0; i < PROBE_WAYS; i++) {
-    int way = (i * WAY_STEP) % PROBE_WAYS;
-    sink ^= *set_addr(buf, set_idx, way);
+  unsigned idx = 7;
+  uint64_t start = monotonic_ns();
+
+  for (int i = 0; i < PROBE_TOUCHES; i++) {
+    idx = (idx * 1103515245u + 12345u) & (WORKING_SET_LINES - 1);
+    sink ^= buf[idx * CACHE_LINE_BYTES];
   }
+
+  return monotonic_ns() - start;
 }
 
-static CYCLES probe_set_latency(void *buf, int set_idx)
+static uint64_t sample_slot_ns(volatile unsigned char *buf)
 {
-  uint64_t sum = 0;
-  for (int i = 0; i < PROBE_WAYS; i++) {
-    int way = (i * WAY_STEP) % PROBE_WAYS;
-    sum += measure_one_block_access_time((ADDR_PTR)set_addr(buf, set_idx, way));
+  uint64_t slot_start = monotonic_ns();
+  uint64_t busy_ns = probe_once_ns(buf);
+  uint64_t elapsed_ns = monotonic_ns() - slot_start;
+
+  if (elapsed_ns < SLOT_NS) {
+    sleep_ns(SLOT_NS - elapsed_ns);
   }
-  return (CYCLES)(sum / PROBE_WAYS);
+
+  return busy_ns;
 }
 
-static int symbol_to_nibble(int symbol)
+static bool sample_slot_active(volatile unsigned char *buf, uint64_t active_threshold_ns)
 {
-  if (symbol < NIBBLE_BASE_SET || symbol > NIBBLE_BASE_SET + 15) {
-    return -1;
-  }
-  return symbol - NIBBLE_BASE_SET;
-}
-
-static int sample_best_symbol(void *buf, CYCLES *best_latency, CYCLES *best_diff)
-{
-  static const int symbols[] = {
-    START_SET, SEP_SET, END_SET,
-    NIBBLE_BASE_SET + 0,  NIBBLE_BASE_SET + 1,  NIBBLE_BASE_SET + 2,  NIBBLE_BASE_SET + 3,
-    NIBBLE_BASE_SET + 4,  NIBBLE_BASE_SET + 5,  NIBBLE_BASE_SET + 6,  NIBBLE_BASE_SET + 7,
-    NIBBLE_BASE_SET + 8,  NIBBLE_BASE_SET + 9,  NIBBLE_BASE_SET + 10, NIBBLE_BASE_SET + 11,
-    NIBBLE_BASE_SET + 12, NIBBLE_BASE_SET + 13, NIBBLE_BASE_SET + 14, NIBBLE_BASE_SET + 15
-  };
-  enum { SYMBOL_COUNT = (int)(sizeof(symbols) / sizeof(symbols[0])) };
-
-  uint64_t sum = 0;
-  CYCLES max_lat = 0;
-  CYCLES second_lat = 0;
-  int max_idx = 0;
-  static int probe_phase = 0;
-
-  for (int i = 0; i < SYMBOL_COUNT; i++) {
-    int idx = (i + probe_phase) % SYMBOL_COUNT;
-    prime_set(buf, symbols[idx]);
-  }
-
-  sleep_ns(PROBE_DELAY_NS);
-
-  for (int i = 0; i < SYMBOL_COUNT; i++) {
-    int idx = (i + probe_phase) % SYMBOL_COUNT;
-    CYCLES lat = probe_set_latency(buf, symbols[idx]);
-    sum += lat;
-
-    if (lat > max_lat) {
-      second_lat = max_lat;
-      max_lat = lat;
-      max_idx = idx;
-    } else if (lat > second_lat) {
-      second_lat = lat;
-    }
-  }
-
-  probe_phase = (probe_phase + 5) % SYMBOL_COUNT;
-
-  CYCLES mean = (CYCLES)(sum / SYMBOL_COUNT);
-  CYCLES diff = (max_lat > mean) ? (max_lat - mean) : 0;
-  CYCLES dominance = (max_lat > second_lat) ? (max_lat - second_lat) : 0;
-
-  *best_latency = max_lat;
-  *best_diff = diff;
-
-  if (dominance < DOMINANCE_MARGIN) {
-    return -1;
-  }
-  return symbols[max_idx];
+  uint64_t busy_ns = sample_slot_ns(buf);
+  return busy_ns >= active_threshold_ns;
 }
 
 int main(int argc, char **argv)
 {
   int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
-  void *buf = mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
-  if (buf == (void *)-1 && MAP_HUGETLB != 0) {
-    mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE;
-    buf = mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
-  }
-  if (buf == (void *)-1) {
+  volatile unsigned char *buf =
+      (volatile unsigned char *)mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
+  if ((void *)buf == (void *)-1) {
     perror("mmap() error\n");
     exit(EXIT_FAILURE);
   }
 
-  for (int set_idx = 0; set_idx < 64; set_idx++) {
-    for (int way = 0; way < PROBE_WAYS; way++) {
-      *set_addr(buf, set_idx, way) = 1;
-    }
+  for (int i = 0; i < BUFF_SIZE; i += CACHE_LINE_BYTES) {
+    buf[i] = (unsigned char)(i & 0xFF);
   }
 
   printf("Please press enter.\n");
@@ -166,112 +102,85 @@ int main(int argc, char **argv)
 
   signal(SIGINT, handle_sigint);
 
-  uint64_t diff_sum = 0;
-  uint64_t lat_sum = 0;
+  uint64_t sum_busy = 0;
+  uint64_t max_busy = 0;
   for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
-    CYCLES max_lat = 0;
-    CYCLES max_diff = 0;
-    (void)sample_best_symbol(buf, &max_lat, &max_diff);
-    lat_sum += max_lat;
-    diff_sum += max_diff;
-    sleep_ns(2000000ULL);
+    uint64_t busy_ns = sample_slot_ns(buf);
+    sum_busy += busy_ns;
+    if (busy_ns > max_busy) {
+      max_busy = busy_ns;
+    }
   }
 
-  CYCLES latency_baseline = (CYCLES)(lat_sum / CALIBRATION_SAMPLES);
-  CYCLES diff_baseline = (CYCLES)(diff_sum / CALIBRATION_SAMPLES);
-  CYCLES active_diff_threshold = (CYCLES)(diff_baseline + DIFF_MARGIN);
-  if (active_diff_threshold < MIN_DIFF_THRESHOLD) {
-    active_diff_threshold = MIN_DIFF_THRESHOLD;
+  uint64_t baseline_ns = sum_busy / CALIBRATION_SAMPLES;
+  uint64_t margin_ns = baseline_ns / 3;
+  if (margin_ns < MIN_MARGIN_NS) {
+    margin_ns = MIN_MARGIN_NS;
   }
+  uint64_t active_threshold_ns = baseline_ns + margin_ns;
 
   printf("Receiver now listening.\n");
-  printf("Latency baseline: %u, active threshold: %u\n",
-         latency_baseline, (unsigned)(latency_baseline + active_diff_threshold));
+  printf("Busy baseline: %llu ns, active threshold: %llu ns, max idle: %llu ns\n",
+         (unsigned long long)baseline_ns,
+         (unsigned long long)active_threshold_ns,
+         (unsigned long long)max_busy);
 
   enum {
-    WAIT_START = 0,
-    WAIT_HIGH = 1,
-    WAIT_SEP = 2,
-    WAIT_LOW = 3,
-    WAIT_END = 4
-  } decode_state = WAIT_START;
-
-  int current_symbol = -1;
-  int current_run = 0;
-  int high_nibble = 0;
-  int low_nibble = 0;
-
-  uint8_t last_value = 0;
-  uint64_t last_print_ns = 0;
+    WAIT_PREAMBLE = 0,
+    WAIT_GAP = 1,
+    READ_BITS = 2
+  } state = WAIT_PREAMBLE;
 
   while (keep_running) {
-    CYCLES max_lat = 0;
-    CYCLES max_diff = 0;
-    int symbol = sample_best_symbol(buf, &max_lat, &max_diff);
+    if (state == WAIT_PREAMBLE) {
+      int active_cnt = 0;
+      for (int i = 0; i < PREAMBLE_SLOTS; i++) {
+        if (sample_slot_active(buf, active_threshold_ns)) {
+          active_cnt++;
+        }
+      }
 
-    if (max_diff < active_diff_threshold) {
-      symbol = -1;
-    }
-
-    if (symbol == current_symbol) {
-      current_run++;
+      if (active_cnt >= PREAMBLE_MIN_ACTIVE) {
+        state = WAIT_GAP;
+      }
       continue;
     }
 
-    if (current_symbol != -1 && current_run >= MIN_SEGMENT_RUN) {
-      if (decode_state == WAIT_START) {
-        if (current_symbol == START_SET) {
-          decode_state = WAIT_HIGH;
-        }
-      } else if (decode_state == WAIT_HIGH) {
-        int nib = symbol_to_nibble(current_symbol);
-        if (nib >= 0) {
-          high_nibble = nib;
-          decode_state = WAIT_SEP;
-        } else if (current_symbol == START_SET) {
-          decode_state = WAIT_HIGH;
-        } else {
-          decode_state = WAIT_START;
-        }
-      } else if (decode_state == WAIT_SEP) {
-        if (current_symbol == SEP_SET) {
-          decode_state = WAIT_LOW;
-        } else if (current_symbol == START_SET) {
-          decode_state = WAIT_HIGH;
-        } else {
-          decode_state = WAIT_START;
-        }
-      } else if (decode_state == WAIT_LOW) {
-        int nib = symbol_to_nibble(current_symbol);
-        if (nib >= 0) {
-          low_nibble = nib;
-          decode_state = WAIT_END;
-        } else if (current_symbol == START_SET) {
-          decode_state = WAIT_HIGH;
-        } else {
-          decode_state = WAIT_START;
-        }
-      } else if (decode_state == WAIT_END) {
-        if (current_symbol == END_SET) {
-          uint8_t value = (uint8_t)((high_nibble << 4) | low_nibble);
-          uint64_t now_ns = monotonic_ns();
-          if (!(value == last_value && (now_ns - last_print_ns) < DEDUPE_WINDOW_NS)) {
-            printf("Received: %u\n", (unsigned)value);
-            fflush(stdout);
-            last_value = value;
-            last_print_ns = now_ns;
-          }
-          decode_state = WAIT_START;
-        } else if (current_symbol == START_SET) {
-          decode_state = WAIT_HIGH;
-        } else {
-          decode_state = WAIT_START;
+    if (state == WAIT_GAP) {
+      int gap_active = 0;
+      for (int i = 0; i < GAP_SLOTS; i++) {
+        if (sample_slot_active(buf, active_threshold_ns)) {
+          gap_active++;
         }
       }
+
+      if (gap_active <= GAP_MAX_ACTIVE) {
+        state = READ_BITS;
+      } else {
+        state = WAIT_PREAMBLE;
+      }
+      continue;
     }
 
-    current_symbol = symbol;
-    current_run = 1;
+    if (state == READ_BITS) {
+      uint8_t value = 0;
+
+      for (int b = 0; b < 8; b++) {
+        int bit_active = 0;
+        for (int r = 0; r < BIT_REPS; r++) {
+          if (sample_slot_active(buf, active_threshold_ns)) {
+            bit_active++;
+          }
+        }
+        int bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
+        value = (uint8_t)((value << 1) | bit);
+      }
+
+      printf("Received: %u\n", (unsigned)value);
+      fflush(stdout);
+
+      state = WAIT_PREAMBLE;
+    }
   }
 
   printf("Receiver finished.\n");
