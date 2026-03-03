@@ -80,6 +80,29 @@ static void tx_byte(volatile unsigned char *buf, uint8_t value)
   }
 }
 
+static void tx_bit(volatile unsigned char *buf, int bit)
+{
+  for (int i = 0; i < PREAMBLE_SLOTS; i++) {
+    tx_active_slot(buf);
+  }
+
+  for (int i = 0; i < GAP_SLOTS; i++) {
+    tx_idle_slot();
+  }
+
+  for (int r = 0; r < BIT_REPS; r++) {
+    if (bit) {
+      tx_active_slot(buf);
+    } else {
+      tx_idle_slot();
+    }
+  }
+
+  for (int i = 0; i < FRAME_GAP_SLOTS; i++) {
+    tx_idle_slot();
+  }
+}
+
 static bool parse_uint8_line(char *line, uint8_t *value)
 {
   char *endptr;
@@ -100,8 +123,20 @@ static bool parse_uint8_line(char *line, uint8_t *value)
   return true;
 }
 
+static bool parse_bit_line(char *line, int *bit)
+{
+  uint8_t value;
+  if (!parse_uint8_line(line, &value) || value > 1) {
+    return false;
+  }
+  *bit = (int)value;
+  return true;
+}
+
 int main(int argc, char **argv)
 {
+  bool single_bit_mode = (argc > 1 && strcmp(argv[1], "--single-bit") == 0);
+
   int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
   volatile unsigned char *buf =
       (volatile unsigned char *)mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
@@ -114,7 +149,12 @@ int main(int argc, char **argv)
     buf[i] = (unsigned char)(i & 0xFF);
   }
 
-  printf("Please type an integer in [0,255] per line (or quit).\n");
+  if (single_bit_mode) {
+    printf("Single-bit mode. Type 0 or 1 per line (or quit).\n");
+  } else {
+    printf("Byte mode. Type an integer in [0,255] per line (or quit).\n");
+  }
+
   while (true) {
     char text_buf[128];
     if (fgets(text_buf, sizeof(text_buf), stdin) == NULL) {
@@ -124,13 +164,21 @@ int main(int argc, char **argv)
       break;
     }
 
-    uint8_t value;
-    if (!parse_uint8_line(text_buf, &value)) {
-      printf("Invalid input. Enter an integer in [0,255].\n");
-      continue;
+    if (single_bit_mode) {
+      int bit;
+      if (!parse_bit_line(text_buf, &bit)) {
+        printf("Invalid input. Enter 0 or 1.\n");
+        continue;
+      }
+      tx_bit(buf, bit);
+    } else {
+      uint8_t value;
+      if (!parse_uint8_line(text_buf, &value)) {
+        printf("Invalid input. Enter an integer in [0,255].\n");
+        continue;
+      }
+      tx_byte(buf, value);
     }
-
-    tx_byte(buf, value);
   }
 
   printf("Sender finished.\n");

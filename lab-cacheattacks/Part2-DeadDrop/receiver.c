@@ -85,6 +85,8 @@ static bool sample_slot_active(volatile unsigned char *buf, uint64_t active_thre
 
 int main(int argc, char **argv)
 {
+  bool single_bit_mode = (argc > 1 && strcmp(argv[1], "--single-bit") == 0);
+
   int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
   volatile unsigned char *buf =
       (volatile unsigned char *)mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
@@ -130,6 +132,11 @@ int main(int argc, char **argv)
   }
 
   printf("Receiver now listening.\n");
+  if (single_bit_mode) {
+    printf("Single-bit mode enabled.\n");
+  } else {
+    printf("Byte mode enabled.\n");
+  }
   printf("Busy baseline: %llu cycles, active threshold: %llu cycles, max idle: %llu cycles\n",
          (unsigned long long)baseline_cycles,
          (unsigned long long)active_threshold_cycles,
@@ -173,9 +180,7 @@ int main(int argc, char **argv)
     }
 
     if (state == READ_BITS) {
-      uint8_t value = 0;
-
-      for (int b = 0; b < 8; b++) {
+      if (single_bit_mode) {
         int bit_active = 0;
         for (int r = 0; r < BIT_REPS; r++) {
           if (sample_slot_active(buf, active_threshold_cycles)) {
@@ -183,11 +188,23 @@ int main(int argc, char **argv)
           }
         }
         int bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
-        value = (uint8_t)((value << 1) | bit);
+        printf("Received bit: %d\n", bit);
+        fflush(stdout);
+      } else {
+        uint8_t value = 0;
+        for (int b = 0; b < 8; b++) {
+          int bit_active = 0;
+          for (int r = 0; r < BIT_REPS; r++) {
+            if (sample_slot_active(buf, active_threshold_cycles)) {
+              bit_active++;
+            }
+          }
+          int bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
+          value = (uint8_t)((value << 1) | bit);
+        }
+        printf("Received: %u\n", (unsigned)value);
+        fflush(stdout);
       }
-
-      printf("Received: %u\n", (unsigned)value);
-      fflush(stdout);
 
       state = WAIT_PREAMBLE;
     }
