@@ -18,17 +18,17 @@
 
 #define MARKER_SET 27
 
-#define SLOT_NS 120000000ULL
+#define SLOT_NS 180000000ULL
 #define PRIME_FRACTION_NUM 3
 #define PRIME_FRACTION_DEN 4
 
 #define CALIBRATION_SAMPLES 120
 #define LATENCY_MARGIN 4
 
-#define SYNC_ACTIVE_SLOTS 6
-#define SYNC_GAP_SLOTS 2
+#define SYNC_ACTIVE_SLOTS 10
+#define SYNC_GAP_SLOTS 3
 #define PRE_DATA_GUARD_SLOTS 1
-#define SYNC_MIN_ACTIVE 4
+#define SYNC_MIN_ACTIVE 8
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -69,14 +69,19 @@ static CYCLES probe_set_latency(void *buf, int set_idx)
   return (CYCLES)(sum / PROBE_WAYS);
 }
 
-static bool sample_slot_active(void *buf, CYCLES threshold)
+static CYCLES sample_slot_latency(void *buf)
 {
   prime_set(buf, MARKER_SET);
   sleep_ns((SLOT_NS * PRIME_FRACTION_NUM) / PRIME_FRACTION_DEN);
   CYCLES lat = probe_set_latency(buf, MARKER_SET);
   uint64_t rem = SLOT_NS - ((SLOT_NS * PRIME_FRACTION_NUM) / PRIME_FRACTION_DEN);
   sleep_ns(rem);
-  return lat >= threshold;
+  return lat;
+}
+
+static bool sample_slot_active(void *buf, CYCLES threshold)
+{
+  return sample_slot_latency(buf) >= threshold;
 }
 
 int main(int argc, char **argv)
@@ -127,13 +132,19 @@ int main(int argc, char **argv)
   while (keep_running) {
     if (state == WAIT_SYNC) {
       int active_cnt = 0;
+      uint64_t sync_sum = 0;
       for (int i = 0; i < SYNC_ACTIVE_SLOTS; i++) {
-        if (sample_slot_active(buf, active_threshold)) {
+        CYCLES lat = sample_slot_latency(buf);
+        sync_sum += lat;
+        if (lat >= active_threshold) {
           active_cnt++;
         }
       }
 
       if (active_cnt >= SYNC_MIN_ACTIVE) {
+        CYCLES sync_avg = (CYCLES)(sync_sum / SYNC_ACTIVE_SLOTS);
+        // Adaptive threshold between idle baseline and measured sync intensity.
+        active_threshold = (CYCLES)((baseline + sync_avg) / 2);
         state = WAIT_SYNC_GAP;
         inactive_run = 0;
       }
