@@ -17,7 +17,7 @@
 #define SLOT_NS 180000000ULL
 #define PREAMBLE_SLOTS 6
 #define GAP_SLOTS 2
-#define BIT_REPS 2
+#define BIT_REPS 3
 #define FRAME_GAP_SLOTS 3
 
 static inline uint64_t monotonic_ns(void)
@@ -42,7 +42,7 @@ static void tx_active_slot(volatile unsigned char *buf)
   unsigned idx = 1;
 
   while (monotonic_ns() < end_ns) {
-    for (int i = 0; i < 16384; i++) {
+    for (int i = 0; i < 32768; i++) {
       idx = (idx * 1103515245u + 12345u) & (WORKING_SET_LINES - 1);
       sink ^= buf[idx * CACHE_LINE_BYTES];
     }

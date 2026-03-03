@@ -21,11 +21,12 @@
 #define PREAMBLE_MIN_ACTIVE 5
 #define GAP_SLOTS 2
 #define GAP_MAX_ACTIVE 0
-#define BIT_REPS 2
+#define BIT_REPS 3
 
 #define CALIBRATION_SAMPLES 50
 #define MIN_MARGIN_NS 5000ULL
 #define MAX_MARGIN_NS 60000ULL
+#define NOISE_PAD_NS 4000ULL
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -124,6 +125,9 @@ int main(int argc, char **argv)
   }
 
   uint64_t active_threshold_ns = baseline_ns + margin_ns;
+  if (active_threshold_ns < max_busy + NOISE_PAD_NS) {
+    active_threshold_ns = max_busy + NOISE_PAD_NS;
+  }
 
   printf("Receiver now listening.\n");
   printf("Busy baseline: %llu ns, active threshold: %llu ns, max idle: %llu ns\n",
