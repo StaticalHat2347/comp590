@@ -24,7 +24,9 @@
 #define BIT_REPS 2
 
 #define CALIBRATION_SAMPLES 50
-#define MIN_MARGIN_NS 250000ULL
+#define MIN_MARGIN_NS 5000ULL
+#define MAX_MARGIN_NS 120000ULL
+#define NOISE_PAD_NS 8000ULL
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -113,11 +115,19 @@ int main(int argc, char **argv)
   }
 
   uint64_t baseline_ns = sum_busy / CALIBRATION_SAMPLES;
-  uint64_t margin_ns = baseline_ns / 3;
+  uint64_t spread_ns = (max_busy > baseline_ns) ? (max_busy - baseline_ns) : 0;
+  uint64_t margin_ns = spread_ns + 15000ULL;
   if (margin_ns < MIN_MARGIN_NS) {
     margin_ns = MIN_MARGIN_NS;
   }
+  if (margin_ns > MAX_MARGIN_NS) {
+    margin_ns = MAX_MARGIN_NS;
+  }
+
   uint64_t active_threshold_ns = baseline_ns + margin_ns;
+  if (active_threshold_ns < max_busy + NOISE_PAD_NS) {
+    active_threshold_ns = max_busy + NOISE_PAD_NS;
+  }
 
   printf("Receiver now listening.\n");
   printf("Busy baseline: %llu ns, active threshold: %llu ns, max idle: %llu ns\n",
