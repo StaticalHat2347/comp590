@@ -20,7 +20,7 @@
 #define PREAMBLE_SLOTS 6
 #define PREAMBLE_MIN_ACTIVE 5
 #define GAP_SLOTS 2
-#define GAP_MAX_ACTIVE 0
+#define GAP_MAX_ACTIVE 1
 #define BIT_REPS 3
 
 #define CALIBRATION_SAMPLES 50
