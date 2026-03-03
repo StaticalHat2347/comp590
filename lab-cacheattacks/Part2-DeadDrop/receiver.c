@@ -15,18 +15,18 @@
 #define WORKING_SET_LINES (BUFF_SIZE / CACHE_LINE_BYTES)
 
 #define SLOT_NS 180000000ULL
-#define PROBE_TOUCHES 8192
+#define PROBE_TOUCHES 4096
 
-#define PREAMBLE_SLOTS 6
-#define PREAMBLE_MIN_ACTIVE 5
+#define PREAMBLE_SLOTS 10
+#define PREAMBLE_MIN_ACTIVE 8
 #define GAP_SLOTS 2
 #define GAP_MAX_ACTIVE 1
 #define BIT_REPS 3
 
 #define CALIBRATION_SAMPLES 50
-#define MIN_MARGIN_CYCLES 10000ULL
+#define MIN_MARGIN_CYCLES 50000ULL
 #define MAX_MARGIN_CYCLES 300000ULL
-#define NOISE_PAD_CYCLES 5000ULL
+#define NOISE_PAD_CYCLES 20000ULL
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -83,6 +83,19 @@ static bool sample_slot_active(volatile unsigned char *buf, uint64_t active_thre
   return busy_cycles >= active_threshold_cycles;
 }
 
+static void sort_u64(uint64_t *arr, int n)
+{
+  for (int i = 1; i < n; i++) {
+    uint64_t key = arr[i];
+    int j = i - 1;
+    while (j >= 0 && arr[j] > key) {
+      arr[j + 1] = arr[j];
+      j--;
+    }
+    arr[j + 1] = key;
+  }
+}
+
 int main(int argc, char **argv)
 {
   bool single_bit_mode = (argc > 1 && strcmp(argv[1], "--single-bit") == 0);
@@ -105,20 +118,21 @@ int main(int argc, char **argv)
 
   signal(SIGINT, handle_sigint);
 
-  uint64_t sum_busy_cycles = 0;
+  uint64_t samples[CALIBRATION_SAMPLES];
   uint64_t max_busy_cycles = 0;
   for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
     uint64_t busy_cycles = sample_slot_cycles(buf);
-    sum_busy_cycles += busy_cycles;
+    samples[i] = busy_cycles;
     if (busy_cycles > max_busy_cycles) {
       max_busy_cycles = busy_cycles;
     }
   }
 
-  uint64_t baseline_cycles = sum_busy_cycles / CALIBRATION_SAMPLES;
-  uint64_t spread_cycles =
-      (max_busy_cycles > baseline_cycles) ? (max_busy_cycles - baseline_cycles) : 0;
-  uint64_t margin_cycles = (spread_cycles / 3) + MIN_MARGIN_CYCLES;
+  sort_u64(samples, CALIBRATION_SAMPLES);
+  uint64_t baseline_cycles = samples[CALIBRATION_SAMPLES / 2];
+  uint64_t p90_cycles = samples[(CALIBRATION_SAMPLES * 9) / 10];
+  uint64_t spread_cycles = (p90_cycles > baseline_cycles) ? (p90_cycles - baseline_cycles) : 0;
+  uint64_t margin_cycles = spread_cycles + MIN_MARGIN_CYCLES;
   if (margin_cycles < MIN_MARGIN_CYCLES) {
     margin_cycles = MIN_MARGIN_CYCLES;
   }
@@ -126,10 +140,7 @@ int main(int argc, char **argv)
     margin_cycles = MAX_MARGIN_CYCLES;
   }
 
-  uint64_t active_threshold_cycles = baseline_cycles + margin_cycles;
-  if (active_threshold_cycles < max_busy_cycles + NOISE_PAD_CYCLES) {
-    active_threshold_cycles = max_busy_cycles + NOISE_PAD_CYCLES;
-  }
+  uint64_t active_threshold_cycles = baseline_cycles + margin_cycles + NOISE_PAD_CYCLES;
 
   printf("Receiver now listening.\n");
   if (single_bit_mode) {
@@ -137,8 +148,9 @@ int main(int argc, char **argv)
   } else {
     printf("Byte mode enabled.\n");
   }
-  printf("Busy baseline: %llu cycles, active threshold: %llu cycles, max idle: %llu cycles\n",
+  printf("Busy baseline: %llu cycles, p90 idle: %llu cycles, active threshold: %llu cycles, max idle: %llu cycles\n",
          (unsigned long long)baseline_cycles,
+         (unsigned long long)p90_cycles,
          (unsigned long long)active_threshold_cycles,
          (unsigned long long)max_busy_cycles);
 
