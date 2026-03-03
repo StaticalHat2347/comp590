@@ -42,7 +42,7 @@ static void tx_active_slot(volatile unsigned char *buf)
   unsigned idx = 1;
 
   while (monotonic_ns() < end_ns) {
-    for (int i = 0; i < 4096; i++) {
+    for (int i = 0; i < 16384; i++) {
       idx = (idx * 1103515245u + 12345u) & (WORKING_SET_LINES - 1);
       sink ^= buf[idx * CACHE_LINE_BYTES];
     }
