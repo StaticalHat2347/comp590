@@ -10,39 +10,24 @@
 #define MAP_HUGETLB 0
 #endif
 
-#define BUFF_SIZE (1 << 22)
+#define BUFF_SIZE (1 << 21)
 #define CACHE_LINE_BYTES 64
 #define WORKING_SET_LINES (BUFF_SIZE / CACHE_LINE_BYTES)
 
-#define SLOT_NS 180000000ULL
+#define SLOT_NS 120000000ULL
 #define PROBE_TOUCHES 4096
 
-#define PREAMBLE_SLOTS 10
-#define PREAMBLE_MIN_ACTIVE 9
+#define PREAMBLE_SLOTS 12
+#define PREAMBLE_MIN_ACTIVE 10
 #define GAP_SLOTS 4
-#define GAP_MAX_ACTIVE 0
-#define BIT_REPS 3
-#define FRAME_GAP_SLOTS 3
-#define FRAME_GAP_MAX_ACTIVE 0
+#define GAP_MAX_ACTIVE 1
+#define BIT_SLOTS 2
+#define FRAME_GAP_SLOTS 4
+#define FRAME_GAP_MAX_ACTIVE 1
 
-#define CALIBRATION_SAMPLES 50
-#define MIN_MARGIN_CYCLES 50000ULL
-#define MAX_MARGIN_CYCLES 300000ULL
-#define NOISE_PAD_CYCLES 20000ULL
-#define DIFF_MIN_CONFIDENCE_FLOOR 200000ULL
-#define DIFF_MIN_CONFIDENCE_CEIL 1200000ULL
-#define DIFF_CONFIRM_WINDOWS 2
-#define LIVE_CONFIRM_WINDOWS 2
-#define LIVE_STARTUP_GUARD_WINDOWS 8
-#define LIVE_ON_PAD_FROM_MAX_IDLE 100000ULL
-#define LIVE_OFF_MIN_DELTA 25000ULL
-
-typedef enum {
-  RX_MODE_BYTE = 0,
-  RX_MODE_SINGLE_BIT = 1,
-  RX_MODE_SINGLE_BIT_DIFF = 2,
-  RX_MODE_SINGLE_BIT_LIVE = 3
-} rx_mode_t;
+#define CALIBRATION_SAMPLES 80
+#define MIN_MARGIN_CYCLES 30000ULL
+#define MAX_MARGIN_CYCLES 180000ULL
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -93,10 +78,10 @@ static uint64_t sample_slot_cycles(volatile unsigned char *buf)
   return busy_cycles;
 }
 
-static bool sample_slot_active(volatile unsigned char *buf, uint64_t active_threshold_cycles)
+static bool sample_slot_active(volatile unsigned char *buf, uint64_t threshold_cycles)
 {
   uint64_t busy_cycles = sample_slot_cycles(buf);
-  return busy_cycles >= active_threshold_cycles;
+  return busy_cycles >= threshold_cycles;
 }
 
 static void sort_u64(uint64_t *arr, int n)
@@ -112,28 +97,10 @@ static void sort_u64(uint64_t *arr, int n)
   }
 }
 
-static rx_mode_t parse_rx_mode(int argc, char **argv)
-{
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--single-bit-live") == 0) {
-      return RX_MODE_SINGLE_BIT_LIVE;
-    }
-    if (strcmp(argv[i], "--single-bit-diff") == 0) {
-      return RX_MODE_SINGLE_BIT_DIFF;
-    }
-    if (strcmp(argv[i], "--single-bit") == 0) {
-      return RX_MODE_SINGLE_BIT;
-    }
-  }
-  return RX_MODE_BYTE;
-}
-
 int main(int argc, char **argv)
 {
-  rx_mode_t mode = parse_rx_mode(argc, argv);
-  bool single_bit_mode = (mode != RX_MODE_BYTE);
-  bool diff_mode = (mode == RX_MODE_SINGLE_BIT_DIFF);
-  bool live_mode = (mode == RX_MODE_SINGLE_BIT_LIVE);
+  (void)argc;
+  (void)argv;
 
   int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
   volatile unsigned char *buf =
@@ -154,19 +121,15 @@ int main(int argc, char **argv)
   signal(SIGINT, handle_sigint);
 
   uint64_t samples[CALIBRATION_SAMPLES];
-  uint64_t max_busy_cycles = 0;
   for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
-    uint64_t busy_cycles = sample_slot_cycles(buf);
-    samples[i] = busy_cycles;
-    if (busy_cycles > max_busy_cycles) {
-      max_busy_cycles = busy_cycles;
-    }
+    samples[i] = sample_slot_cycles(buf);
   }
 
   sort_u64(samples, CALIBRATION_SAMPLES);
-  uint64_t baseline_cycles = samples[CALIBRATION_SAMPLES / 2];
+  uint64_t p50_cycles = samples[CALIBRATION_SAMPLES / 2];
   uint64_t p90_cycles = samples[(CALIBRATION_SAMPLES * 9) / 10];
-  uint64_t spread_cycles = (p90_cycles > baseline_cycles) ? (p90_cycles - baseline_cycles) : 0;
+  uint64_t spread_cycles = (p90_cycles > p50_cycles) ? (p90_cycles - p50_cycles) : 0;
+
   uint64_t margin_cycles = spread_cycles + MIN_MARGIN_CYCLES;
   if (margin_cycles < MIN_MARGIN_CYCLES) {
     margin_cycles = MIN_MARGIN_CYCLES;
@@ -175,127 +138,21 @@ int main(int argc, char **argv)
     margin_cycles = MAX_MARGIN_CYCLES;
   }
 
-  uint64_t active_threshold_cycles = baseline_cycles + margin_cycles + NOISE_PAD_CYCLES;
-  // For framed byte/single-bit modes, keep active threshold above observed idle max
-  // to avoid false preamble detection while sender is silent.
-  if (!live_mode && active_threshold_cycles < max_busy_cycles + NOISE_PAD_CYCLES) {
-    active_threshold_cycles = max_busy_cycles + NOISE_PAD_CYCLES;
-  }
-  uint64_t diff_min_confidence = (spread_cycles * 2ULL) + 50000ULL;
-  uint64_t live_on_threshold = max_busy_cycles + LIVE_ON_PAD_FROM_MAX_IDLE;
-  uint64_t live_off_threshold = baseline_cycles + (spread_cycles / 2ULL) + LIVE_OFF_MIN_DELTA;
-  if (live_off_threshold >= live_on_threshold) {
-    live_off_threshold = live_on_threshold - 1;
-  }
-  if (diff_min_confidence < DIFF_MIN_CONFIDENCE_FLOOR) {
-    diff_min_confidence = DIFF_MIN_CONFIDENCE_FLOOR;
-  }
-  if (diff_min_confidence > DIFF_MIN_CONFIDENCE_CEIL) {
-    diff_min_confidence = DIFF_MIN_CONFIDENCE_CEIL;
-  }
+  uint64_t active_threshold_cycles = p90_cycles + margin_cycles;
 
   printf("Receiver now listening.\n");
-  if (single_bit_mode) {
-    if (live_mode) {
-      printf("Single-bit live mode enabled.\n");
-    } else if (diff_mode) {
-      printf("Single-bit differential mode enabled.\n");
-    } else {
-      printf("Single-bit mode enabled.\n");
-    }
-  } else {
-    printf("Byte mode enabled.\n");
-  }
-  printf("Busy baseline: %llu cycles, p90 idle: %llu cycles, active threshold: %llu cycles, max idle: %llu cycles\n",
-         (unsigned long long)baseline_cycles,
+  printf("Busy p50: %llu cycles, p90 idle: %llu cycles, active threshold: %llu cycles\n",
+         (unsigned long long)p50_cycles,
          (unsigned long long)p90_cycles,
-         (unsigned long long)active_threshold_cycles,
-         (unsigned long long)max_busy_cycles);
-  if (diff_mode) {
-    printf("Differential confidence threshold: %llu cycles\n", (unsigned long long)diff_min_confidence);
-  }
-  if (live_mode) {
-    printf("Live mode thresholds: on=%llu off=%llu cycles\n",
-           (unsigned long long)live_on_threshold,
-           (unsigned long long)live_off_threshold);
-  }
+         (unsigned long long)active_threshold_cycles);
 
   enum {
     WAIT_PREAMBLE = 0,
     WAIT_GAP = 1,
     READ_BITS = 2
   } state = WAIT_PREAMBLE;
-  int stable_bit = 0;
-  int candidate_bit = 0;
-  int candidate_count = 0;
-  int startup_guard = LIVE_STARTUP_GUARD_WINDOWS;
-
-  if (single_bit_mode && (diff_mode || live_mode)) {
-    printf("Received bit: 0\n");
-    fflush(stdout);
-  }
 
   while (keep_running) {
-    if (live_mode && single_bit_mode) {
-      uint64_t busy_sum = 0;
-      for (int r = 0; r < BIT_REPS; r++) {
-        busy_sum += sample_slot_cycles(buf);
-      }
-      uint64_t busy_avg = busy_sum / BIT_REPS;
-      if (startup_guard > 0) {
-        startup_guard--;
-        continue;
-      }
-
-      int observed_bit = stable_bit;
-      if (stable_bit == 0) {
-        if (busy_avg >= live_on_threshold) {
-          observed_bit = 1;
-        }
-      } else {
-        if (busy_avg <= live_off_threshold) {
-          observed_bit = 0;
-        }
-      }
-
-      if (observed_bit == candidate_bit) {
-        candidate_count++;
-      } else {
-        candidate_bit = observed_bit;
-        candidate_count = 1;
-      }
-      if (candidate_count >= LIVE_CONFIRM_WINDOWS && candidate_bit != stable_bit) {
-        stable_bit = candidate_bit;
-        printf("Received bit: %d\n", stable_bit);
-        fflush(stdout);
-      }
-      continue;
-    }
-
-    if (diff_mode && single_bit_mode) {
-      int64_t score = 0;
-      for (int r = 0; r < BIT_REPS; r++) {
-        uint64_t first = sample_slot_cycles(buf);
-        uint64_t second = sample_slot_cycles(buf);
-        score += (int64_t)first - (int64_t)second;
-      }
-
-      int observed_bit = (score > (int64_t)diff_min_confidence) ? 1 : 0;
-      if (observed_bit == candidate_bit) {
-        candidate_count++;
-      } else {
-        candidate_bit = observed_bit;
-        candidate_count = 1;
-      }
-
-      if (candidate_count >= DIFF_CONFIRM_WINDOWS && candidate_bit != stable_bit) {
-        stable_bit = candidate_bit;
-        printf("Received bit: %d\n", stable_bit);
-        fflush(stdout);
-      }
-      continue;
-    }
-
     if (state == WAIT_PREAMBLE) {
       int active_cnt = 0;
       for (int i = 0; i < PREAMBLE_SLOTS; i++) {
@@ -303,7 +160,6 @@ int main(int argc, char **argv)
           active_cnt++;
         }
       }
-
       if (active_cnt >= PREAMBLE_MIN_ACTIVE) {
         state = WAIT_GAP;
       }
@@ -317,10 +173,7 @@ int main(int argc, char **argv)
           gap_active++;
         }
       }
-
-      if (diff_mode) {
-        state = READ_BITS;
-      } else if (gap_active <= GAP_MAX_ACTIVE) {
+      if (gap_active <= GAP_MAX_ACTIVE) {
         state = READ_BITS;
       } else {
         state = WAIT_PREAMBLE;
@@ -329,54 +182,29 @@ int main(int argc, char **argv)
     }
 
     if (state == READ_BITS) {
-      if (single_bit_mode) {
-        int bit;
-        if (diff_mode) {
-          int64_t score = 0;
-          for (int r = 0; r < BIT_REPS; r++) {
-            uint64_t first = sample_slot_cycles(buf);
-            uint64_t second = sample_slot_cycles(buf);
-            score += (int64_t)first - (int64_t)second;
-          }
-          if ((uint64_t)llabs(score) < diff_min_confidence) {
-            state = WAIT_PREAMBLE;
-            continue;
-          }
-          bit = (score > 0) ? 1 : 0;
-        } else {
-          int bit_active = 0;
-          for (int r = 0; r < BIT_REPS; r++) {
-            if (sample_slot_active(buf, active_threshold_cycles)) {
-              bit_active++;
-            }
-          }
-          bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
-        }
-        printf("Received bit: %d\n", bit);
-        fflush(stdout);
-      } else {
-        uint8_t value = 0;
-        for (int b = 0; b < 8; b++) {
-          int bit_active = 0;
-          for (int r = 0; r < BIT_REPS; r++) {
-            if (sample_slot_active(buf, active_threshold_cycles)) {
-              bit_active++;
-            }
-          }
-          int bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
-          value = (uint8_t)((value << 1) | bit);
-        }
-        int frame_gap_active = 0;
-        for (int i = 0; i < FRAME_GAP_SLOTS; i++) {
-          if (sample_slot_active(buf, active_threshold_cycles)) {
-            frame_gap_active++;
-          }
-        }
+      uint8_t value = 0;
 
-        if (frame_gap_active <= FRAME_GAP_MAX_ACTIVE) {
-          printf("%u\n", (unsigned)value);
-          fflush(stdout);
+      for (int b = 0; b < 8; b++) {
+        int bit_active = 0;
+        for (int i = 0; i < BIT_SLOTS; i++) {
+          if (sample_slot_active(buf, active_threshold_cycles)) {
+            bit_active++;
+          }
         }
+        int bit = (bit_active >= 1) ? 1 : 0;
+        value = (uint8_t)((value << 1) | bit);
+      }
+
+      int frame_gap_active = 0;
+      for (int i = 0; i < FRAME_GAP_SLOTS; i++) {
+        if (sample_slot_active(buf, active_threshold_cycles)) {
+          frame_gap_active++;
+        }
+      }
+
+      if (frame_gap_active <= FRAME_GAP_MAX_ACTIVE) {
+        printf("%u\n", (unsigned)value);
+        fflush(stdout);
       }
 
       state = WAIT_PREAMBLE;

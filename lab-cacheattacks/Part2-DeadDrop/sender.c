@@ -10,22 +10,15 @@
 #define MAP_HUGETLB 0
 #endif
 
-#define BUFF_SIZE (1 << 22)
+#define BUFF_SIZE (1 << 21)
 #define CACHE_LINE_BYTES 64
 #define WORKING_SET_LINES (BUFF_SIZE / CACHE_LINE_BYTES)
 
-#define SLOT_NS 180000000ULL
-#define PREAMBLE_SLOTS 10
+#define SLOT_NS 120000000ULL
+#define PREAMBLE_SLOTS 12
 #define GAP_SLOTS 4
-#define BIT_REPS 3
-#define FRAME_GAP_SLOTS 3
-
-typedef enum {
-  TX_MODE_BYTE = 0,
-  TX_MODE_SINGLE_BIT = 1,
-  TX_MODE_SINGLE_BIT_DIFF = 2,
-  TX_MODE_SINGLE_BIT_LIVE = 3
-} tx_mode_t;
+#define BIT_SLOTS 2
+#define FRAME_GAP_SLOTS 4
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -49,7 +42,7 @@ static void tx_active_slot(volatile unsigned char *buf)
   unsigned idx = 1;
 
   while (monotonic_ns() < end_ns) {
-    for (int i = 0; i < 32768; i++) {
+    for (int i = 0; i < 131072; i++) {
       idx = (idx * 1103515245u + 12345u) & (WORKING_SET_LINES - 1);
       sink ^= buf[idx * CACHE_LINE_BYTES];
     }
@@ -59,6 +52,17 @@ static void tx_active_slot(volatile unsigned char *buf)
 static void tx_idle_slot(void)
 {
   sleep_ns(SLOT_NS);
+}
+
+static void tx_bit_slots(volatile unsigned char *buf, int bit)
+{
+  for (int i = 0; i < BIT_SLOTS; i++) {
+    if (bit) {
+      tx_active_slot(buf);
+    } else {
+      tx_idle_slot();
+    }
+  }
 }
 
 static void tx_byte(volatile unsigned char *buf, uint8_t value)
@@ -73,77 +77,11 @@ static void tx_byte(volatile unsigned char *buf, uint8_t value)
 
   for (int b = 7; b >= 0; b--) {
     int bit = (value >> b) & 1;
-    for (int r = 0; r < BIT_REPS; r++) {
-      if (bit) {
-        tx_active_slot(buf);
-      } else {
-        tx_idle_slot();
-      }
-    }
+    tx_bit_slots(buf, bit);
   }
 
   for (int i = 0; i < FRAME_GAP_SLOTS; i++) {
     tx_idle_slot();
-  }
-}
-
-static void tx_bit(volatile unsigned char *buf, int bit)
-{
-  for (int i = 0; i < PREAMBLE_SLOTS; i++) {
-    tx_active_slot(buf);
-  }
-
-  for (int i = 0; i < GAP_SLOTS; i++) {
-    tx_idle_slot();
-  }
-
-  for (int r = 0; r < BIT_REPS; r++) {
-    if (bit) {
-      tx_active_slot(buf);
-    } else {
-      tx_idle_slot();
-    }
-  }
-
-  for (int i = 0; i < FRAME_GAP_SLOTS; i++) {
-    tx_idle_slot();
-  }
-}
-
-static void tx_bit_diff(volatile unsigned char *buf, int bit)
-{
-  for (int i = 0; i < PREAMBLE_SLOTS; i++) {
-    tx_active_slot(buf);
-  }
-
-  for (int i = 0; i < GAP_SLOTS; i++) {
-    tx_idle_slot();
-  }
-
-  for (int r = 0; r < BIT_REPS; r++) {
-    if (bit) {
-      tx_active_slot(buf);
-      tx_idle_slot();
-    } else {
-      tx_idle_slot();
-      tx_active_slot(buf);
-    }
-  }
-
-  for (int i = 0; i < FRAME_GAP_SLOTS; i++) {
-    tx_idle_slot();
-  }
-}
-
-static void tx_bit_live(volatile unsigned char *buf, int bit)
-{
-  const int live_slots = 60;
-  for (int i = 0; i < live_slots; i++) {
-    if (bit) {
-      tx_active_slot(buf);
-    } else {
-      tx_idle_slot();
-    }
   }
 }
 
@@ -167,38 +105,10 @@ static bool parse_uint8_line(char *line, uint8_t *value)
   return true;
 }
 
-static bool parse_bit_line(char *line, int *bit)
-{
-  uint8_t value;
-  if (!parse_uint8_line(line, &value) || value > 1) {
-    return false;
-  }
-  *bit = (int)value;
-  return true;
-}
-
-static tx_mode_t parse_tx_mode(int argc, char **argv)
-{
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--single-bit-live") == 0) {
-      return TX_MODE_SINGLE_BIT_LIVE;
-    }
-    if (strcmp(argv[i], "--single-bit-diff") == 0) {
-      return TX_MODE_SINGLE_BIT_DIFF;
-    }
-    if (strcmp(argv[i], "--single-bit") == 0) {
-      return TX_MODE_SINGLE_BIT;
-    }
-  }
-  return TX_MODE_BYTE;
-}
-
 int main(int argc, char **argv)
 {
-  tx_mode_t mode = parse_tx_mode(argc, argv);
-  bool single_bit_mode = (mode != TX_MODE_BYTE);
-  bool diff_mode = (mode == TX_MODE_SINGLE_BIT_DIFF);
-  bool live_mode = (mode == TX_MODE_SINGLE_BIT_LIVE);
+  (void)argc;
+  (void)argv;
 
   int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
   volatile unsigned char *buf =
@@ -212,17 +122,7 @@ int main(int argc, char **argv)
     buf[i] = (unsigned char)(i & 0xFF);
   }
 
-  if (single_bit_mode) {
-    if (live_mode) {
-      printf("Single-bit live mode. Type 0 or 1 per line (or quit).\n");
-    } else if (diff_mode) {
-      printf("Single-bit differential mode. Type 0 or 1 per line (or quit).\n");
-    } else {
-      printf("Single-bit mode. Type 0 or 1 per line (or quit).\n");
-    }
-  } else {
-    printf("Please type a message.\n");
-  }
+  printf("Please type a message.\n");
 
   while (true) {
     char text_buf[128];
@@ -233,27 +133,13 @@ int main(int argc, char **argv)
       break;
     }
 
-    if (single_bit_mode) {
-      int bit;
-      if (!parse_bit_line(text_buf, &bit)) {
-        printf("Invalid input. Enter 0 or 1.\n");
-        continue;
-      }
-      if (live_mode) {
-        tx_bit_live(buf, bit);
-      } else if (diff_mode) {
-        tx_bit_diff(buf, bit);
-      } else {
-        tx_bit(buf, bit);
-      }
-    } else {
-      uint8_t value;
-      if (!parse_uint8_line(text_buf, &value)) {
-        printf("Invalid input. Enter an integer in [0,255].\n");
-        continue;
-      }
-      tx_byte(buf, value);
+    uint8_t value;
+    if (!parse_uint8_line(text_buf, &value)) {
+      printf("Invalid input. Enter an integer in [0,255].\n");
+      continue;
     }
+
+    tx_byte(buf, value);
   }
 
   printf("Sender finished.\n");
