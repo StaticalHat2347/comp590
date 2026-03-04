@@ -19,9 +19,11 @@
 
 #define PREAMBLE_SLOTS 10
 #define PREAMBLE_MIN_ACTIVE 9
-#define GAP_SLOTS 2
-#define GAP_MAX_ACTIVE 1
+#define GAP_SLOTS 4
+#define GAP_MAX_ACTIVE 0
 #define BIT_REPS 3
+#define FRAME_GAP_SLOTS 3
+#define FRAME_GAP_MAX_ACTIVE 0
 
 #define CALIBRATION_SAMPLES 50
 #define MIN_MARGIN_CYCLES 50000ULL
@@ -364,8 +366,17 @@ int main(int argc, char **argv)
           int bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
           value = (uint8_t)((value << 1) | bit);
         }
-        printf("%u\n", (unsigned)value);
-        fflush(stdout);
+        int frame_gap_active = 0;
+        for (int i = 0; i < FRAME_GAP_SLOTS; i++) {
+          if (sample_slot_active(buf, active_threshold_cycles)) {
+            frame_gap_active++;
+          }
+        }
+
+        if (frame_gap_active <= FRAME_GAP_MAX_ACTIVE) {
+          printf("%u\n", (unsigned)value);
+          fflush(stdout);
+        }
       }
 
       state = WAIT_PREAMBLE;

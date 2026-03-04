@@ -16,7 +16,7 @@
 
 #define SLOT_NS 180000000ULL
 #define PREAMBLE_SLOTS 10
-#define GAP_SLOTS 2
+#define GAP_SLOTS 4
 #define BIT_REPS 3
 #define FRAME_GAP_SLOTS 3
 
