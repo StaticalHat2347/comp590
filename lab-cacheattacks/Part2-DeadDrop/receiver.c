@@ -15,6 +15,9 @@
 
 #define PREAMBLE_BYTE   0xAA  /* 10101010 */
 
+/* each logical bit is repeated this many slots */
+#define BIT_REP         3
+
 static inline uint64_t rdtsc64(void) {
   uint32_t lo, hi;
   asm volatile("lfence\n\trdtsc\n\t" : "=a"(lo), "=d"(hi) :: "memory");
@@ -78,6 +81,35 @@ static uint32_t avg_over_n_slots(char *buf, uint32_t *perm, uint32_t nlines, int
   return (uint32_t)(acc / (uint64_t)n);
 }
 
+static int decode_physical_bit(uint32_t avg, uint32_t thr, bool one_is_high) {
+  if (one_is_high) return (avg > thr) ? 1 : 0;
+  return (avg < thr) ? 1 : 0;
+}
+
+static int decode_logical_bit(char *buf, uint32_t *perm, uint32_t nlines,
+                              uint32_t thr, bool one_is_high) {
+  int ones = 0;
+  for (int r = 0; r < BIT_REP; r++) {
+    uint64_t t = rdtsc64();
+    uint64_t slot_start = next_slot_boundary(t);
+    wait_until(slot_start + GUARD_CYCLES);
+    uint32_t avg = measure_slot(buf, perm, nlines);
+    ones += decode_physical_bit(avg, thr, one_is_high);
+    wait_until(slot_start + SLOT_CYCLES);
+  }
+  return (ones > (BIT_REP / 2)) ? 1 : 0;
+}
+
+static uint8_t recv_byte(char *buf, uint32_t *perm, uint32_t nlines,
+                         uint32_t thr, bool one_is_high) {
+  uint8_t b = 0;
+  for (int i = 0; i < 8; i++) {
+    int bit = decode_logical_bit(buf, perm, nlines, thr, one_is_high);
+    b = (uint8_t)((b << 1) | (bit & 1));
+  }
+  return b;
+}
+
 int main(int argc, char **argv) {
   void *buf = alloc_hugepage();
 
@@ -95,17 +127,14 @@ int main(int argc, char **argv) {
 
   printf("receiver now listening.\n");
 
-  /* calibrate quiet */
   fprintf(stderr, "calibration: keep sender idle.\n");
   fflush(stderr);
   uint32_t quiet = avg_over_n_slots((char*)buf, perm, nlines, 12);
 
-  /* calibrate busy using sustained thrash */
   fprintf(stderr, "calibration: in sender, type cal and press enter.\n");
   fflush(stderr);
   uint32_t busy = avg_over_n_slots((char*)buf, perm, nlines, 12);
 
-  /* choose threshold mid-point and infer polarity */
   uint32_t thr = (quiet + busy) / 2;
   bool one_is_high = (busy > quiet);
 
@@ -113,54 +142,25 @@ int main(int argc, char **argv) {
           quiet, busy, thr, one_is_high ? "high" : "low");
   fflush(stderr);
 
-  /* hunt preamble then read one payload byte */
-  enum { HUNT_PREAMBLE = 0, READ_DATA = 1 } state = HUNT_PREAMBLE;
-
-  uint8_t shift = 0;
-  int shift_bits = 0;
-
-  uint8_t data = 0;
-  int data_bits = 0;
+  /* require two consecutive preamble bytes to lock */
+  int preamble_hits = 0;
 
   while (true) {
-    uint64_t t = rdtsc64();
-    uint64_t slot_start = next_slot_boundary(t);
+    uint8_t b = recv_byte((char*)buf, perm, nlines, thr, one_is_high);
 
-    wait_until(slot_start + GUARD_CYCLES);
-    uint32_t avg = measure_slot((char*)buf, perm, nlines);
-
-    /* decode bit using calibrated polarity */
-    int bit;
-    if (one_is_high) {
-      bit = (avg > thr) ? 1 : 0;
-    } else {
-      bit = (avg < thr) ? 1 : 0;
+    if (preamble_hits < 2) {
+      if (b == PREAMBLE_BYTE) preamble_hits++;
+      else preamble_hits = 0;
+      continue;
     }
 
-    if (state == HUNT_PREAMBLE) {
-      shift = (uint8_t)((shift << 1) | (bit & 1));
-      if (shift_bits < 8) shift_bits++;
+    /* after lock, next byte is the payload */
+    uint8_t val = recv_byte((char*)buf, perm, nlines, thr, one_is_high);
+    printf("%u\n", (unsigned)val);
+    fflush(stdout);
 
-      if (shift_bits == 8 && shift == PREAMBLE_BYTE) {
-        state = READ_DATA;
-        data = 0;
-        data_bits = 0;
-      }
-    } else {
-      data = (uint8_t)((data << 1) | (bit & 1));
-      data_bits++;
-
-      if (data_bits == 8) {
-        printf("%u\n", (unsigned)data);
-        fflush(stdout);
-
-        state = HUNT_PREAMBLE;
-        shift = 0;
-        shift_bits = 0;
-      }
-    }
-
-    wait_until(slot_start + SLOT_CYCLES);
+    /* reset and hunt again */
+    preamble_hits = 0;
   }
 
   return 0;

@@ -14,6 +14,9 @@
 
 #define PREAMBLE_BYTE   0xAA  /* 10101010 */
 
+/* must match receiver */
+#define BIT_REP         3
+
 static inline uint64_t rdtsc64(void) {
   uint32_t lo, hi;
   asm volatile("lfence\n\trdtsc\n\t" : "=a"(lo), "=d"(hi) :: "memory");
@@ -63,7 +66,7 @@ static void thrash(char *buf, uint32_t *perm, uint32_t nlines) {
   }
 }
 
-static void send_bit(char *buf, uint32_t *perm, uint32_t nlines, int bit) {
+static void send_physical_bit(char *buf, uint32_t *perm, uint32_t nlines, int bit) {
   uint64_t now = rdtsc64();
   uint64_t slot_start = next_slot_boundary(now);
   uint64_t slot_end = slot_start + SLOT_CYCLES;
@@ -79,29 +82,34 @@ static void send_bit(char *buf, uint32_t *perm, uint32_t nlines, int bit) {
   }
 }
 
-static void send_byte(char *buf, uint32_t *perm, uint32_t nlines, uint8_t b) {
-  for (int i = 7; i >= 0; i--) {
-    int bit = (b >> i) & 1;
-    send_bit(buf, perm, nlines, bit);
+static void send_logical_bit(char *buf, uint32_t *perm, uint32_t nlines, int bit) {
+  for (int r = 0; r < BIT_REP; r++) {
+    send_physical_bit(buf, perm, nlines, bit);
   }
 }
 
-static void send_frame(char *buf, uint32_t *perm, uint32_t nlines, uint8_t val) {
-  /* quiet gap before frame */
-  for (int i = 0; i < 6; i++) send_bit(buf, perm, nlines, 0);
-
-  /* preamble then payload */
-  send_byte(buf, perm, nlines, (uint8_t)PREAMBLE_BYTE);
-  send_byte(buf, perm, nlines, val);
-
-  /* quiet gap after frame */
-  for (int i = 0; i < 6; i++) send_bit(buf, perm, nlines, 0);
+static void send_byte(char *buf, uint32_t *perm, uint32_t nlines, uint8_t b) {
+  for (int i = 7; i >= 0; i--) {
+    int bit = (b >> i) & 1;
+    send_logical_bit(buf, perm, nlines, bit);
+  }
 }
 
 static void send_calibration_burst(char *buf, uint32_t *perm, uint32_t nlines) {
-  /* sustained thrash across many slots for stable calibration */
-  for (int i = 0; i < 16; i++) send_bit(buf, perm, nlines, 1);
-  for (int i = 0; i < 8; i++)  send_bit(buf, perm, nlines, 0);
+  for (int i = 0; i < 24; i++) send_physical_bit(buf, perm, nlines, 1);
+  for (int i = 0; i < 12; i++) send_physical_bit(buf, perm, nlines, 0);
+}
+
+static void send_frame(char *buf, uint32_t *perm, uint32_t nlines, uint8_t val) {
+  for (int i = 0; i < 6; i++) send_physical_bit(buf, perm, nlines, 0);
+
+  /* send preamble twice for robust lock */
+  send_byte(buf, perm, nlines, (uint8_t)PREAMBLE_BYTE);
+  send_byte(buf, perm, nlines, (uint8_t)PREAMBLE_BYTE);
+
+  send_byte(buf, perm, nlines, val);
+
+  for (int i = 0; i < 6; i++) send_physical_bit(buf, perm, nlines, 0);
 }
 
 int main(int argc, char **argv) {
@@ -121,7 +129,6 @@ int main(int argc, char **argv) {
     char text_buf[128];
     if (!fgets(text_buf, sizeof(text_buf), stdin)) break;
 
-    /* handle calibration command */
     if (strncmp(text_buf, "cal", 3) == 0) {
       send_calibration_burst((char*)buf, perm, nlines);
       continue;
