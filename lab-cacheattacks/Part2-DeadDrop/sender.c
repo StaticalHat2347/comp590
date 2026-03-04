@@ -137,7 +137,7 @@ static void tx_bit_diff(volatile unsigned char *buf, int bit)
 
 static void tx_bit_live(volatile unsigned char *buf, int bit)
 {
-  const int live_slots = 36;
+  const int live_slots = 60;
   for (int i = 0; i < live_slots; i++) {
     if (bit) {
       tx_active_slot(buf);

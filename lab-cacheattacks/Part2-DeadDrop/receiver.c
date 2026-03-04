@@ -31,8 +31,8 @@
 #define DIFF_MIN_CONFIDENCE_CEIL 1200000ULL
 #define DIFF_CONFIRM_WINDOWS 2
 #define LIVE_CONFIRM_WINDOWS 2
-#define LIVE_STARTUP_GUARD_WINDOWS 4
-#define LIVE_ON_MIN_DELTA 50000ULL
+#define LIVE_STARTUP_GUARD_WINDOWS 8
+#define LIVE_ON_PAD_FROM_MAX_IDLE 100000ULL
 #define LIVE_OFF_MIN_DELTA 25000ULL
 
 typedef enum {
@@ -174,8 +174,13 @@ int main(int argc, char **argv)
   }
 
   uint64_t active_threshold_cycles = baseline_cycles + margin_cycles + NOISE_PAD_CYCLES;
+  // For framed byte/single-bit modes, keep active threshold above observed idle max
+  // to avoid false preamble detection while sender is silent.
+  if (!live_mode && active_threshold_cycles < max_busy_cycles + NOISE_PAD_CYCLES) {
+    active_threshold_cycles = max_busy_cycles + NOISE_PAD_CYCLES;
+  }
   uint64_t diff_min_confidence = (spread_cycles * 2ULL) + 50000ULL;
-  uint64_t live_on_threshold = baseline_cycles + spread_cycles + LIVE_ON_MIN_DELTA;
+  uint64_t live_on_threshold = max_busy_cycles + LIVE_ON_PAD_FROM_MAX_IDLE;
   uint64_t live_off_threshold = baseline_cycles + (spread_cycles / 2ULL) + LIVE_OFF_MIN_DELTA;
   if (live_off_threshold >= live_on_threshold) {
     live_off_threshold = live_on_threshold - 1;
