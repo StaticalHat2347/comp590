@@ -6,10 +6,17 @@
 #include <stdint.h>
 
 #define BUFF_SIZE     (1<<21)     // 2 MiB hugepage
-#define LINE_SIZE     64          // typical cache line
-#define PROBE_LINES   4096        // 4096 lines * 64B = 256 KiB probe footprint
-#define SLOT_CYCLES   200000      // bit slot length (tune 100k-400k)
-#define GUARD_CYCLES  20000       // skip boundary jitter at start of slot
+#define LINE_SIZE     64
+
+// Make the receiver more sensitive
+#define PROBE_LINES   16384       // 16384 * 64B = 1 MiB probe footprint
+
+// Make slots longer to reduce noise
+#define SLOT_CYCLES   400000      // tune: 300k-600k
+#define GUARD_CYCLES  50000       // skip boundary jitter
+
+// Threshold margin above baseline (tune: 30-120)
+#define THRESH_MARGIN 50
 
 // --- TSC helpers ---
 static inline uint64_t rdtsc64(void) {
@@ -31,8 +38,7 @@ static void *alloc_hugepage(void) {
     perror("mmap");
     exit(EXIT_FAILURE);
   }
-
-  // trigger allocation + reduce first-touch noise
+  // trigger allocation
   *((volatile char*)buf) = 1;
   return buf;
 }
@@ -78,13 +84,12 @@ int main(int argc, char **argv) {
   build_perm(perm, nlines);
 
   printf("Please press enter.\n");
-
   char text_buf[2];
   fgets(text_buf, sizeof(text_buf), stdin);
 
   printf("Receiver now listening.\n");
 
-  // --- Quick baseline calibration (sender should ideally be idle here) ---
+  // --- Baseline calibration (sender should be idle if possible) ---
   uint64_t now = rdtsc64();
   uint64_t slot0 = (now / SLOT_CYCLES + 1) * SLOT_CYCLES;
 
@@ -96,27 +101,39 @@ int main(int argc, char **argv) {
   }
   baseline /= 10;
 
-  // Conservative threshold; tune if needed
-  uint32_t threshold = baseline + 20;
+  uint32_t threshold = baseline + THRESH_MARGIN;
 
-  // Optional debug:
-  // fprintf(stderr, "[receiver] baseline=%u threshold=%u\n", baseline, threshold);
+  fprintf(stderr, "[receiver] baseline=%u threshold=%u (margin=%u)\n",
+          baseline, threshold, (unsigned)THRESH_MARGIN);
+  fflush(stderr);
 
   bool listening = true;
   while (listening) {
     uint64_t t = rdtsc64();
     uint64_t slot_start = (t / SLOT_CYCLES + 1) * SLOT_CYCLES;
 
+    // Measure in the stable part of the slot
     wait_until(slot_start + GUARD_CYCLES);
     uint32_t avg = measure_slot((char*)buf, perm, nlines);
 
     int bit = (avg > threshold) ? 1 : 0;
 
-    // Print decoded bit
+    // Primary output: decoded bit
     printf("%d\n", bit);
     fflush(stdout);
 
-    // Wait out the rest of the slot so we stay aligned
+    // Debug: show what receiver is seeing
+    fprintf(stderr, "[receiver] avg=%u thr=%u base=%u bit=%d\n",
+            avg, threshold, baseline, bit);
+    fflush(stderr);
+
+    // Adapt baseline only on decoded 0-slots to track drift
+    if (bit == 0) {
+      baseline = (baseline * 9 + avg) / 10; // EMA smoothing
+      threshold = baseline + THRESH_MARGIN;
+    }
+
+    // Keep slot alignment
     wait_until(slot_start + SLOT_CYCLES);
   }
 

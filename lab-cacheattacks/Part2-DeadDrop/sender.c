@@ -7,9 +7,12 @@
 
 #define BUFF_SIZE      (1<<21)     // 2 MiB hugepage
 #define LINE_SIZE      64
-#define THRASH_LINES   16384       // 16384 * 64B = 1 MiB working set
-#define SLOT_CYCLES    200000      // must match receiver
-#define GUARD_CYCLES   20000       // not strictly needed here, but keep consistent
+
+// Stronger contention: 2 MiB working set
+#define THRASH_LINES   32768       // 32768 * 64B = 2 MiB footprint
+
+// Must match receiver
+#define SLOT_CYCLES    400000
 
 // --- TSC helpers ---
 static inline uint64_t rdtsc64(void) {
@@ -31,7 +34,6 @@ static void *alloc_hugepage(void) {
     perror("mmap");
     exit(EXIT_FAILURE);
   }
-
   *((volatile char*)buf) = 1;
   return buf;
 }
@@ -54,13 +56,12 @@ static void build_perm(uint32_t *idx, uint32_t n) {
   }
 }
 
-// Read many distinct cache lines to create L2 contention
+// Write-mix thrash to create stronger cache + pipeline contention
 static void thrash(char *buf, uint32_t *perm, uint32_t nlines) {
-  volatile uint64_t sink = 0;
   for (uint32_t k = 0; k < nlines; k++) {
-    sink += *(volatile uint8_t*)(buf + perm[k] * LINE_SIZE);
+    volatile uint8_t *p = (volatile uint8_t*)(buf + perm[k] * LINE_SIZE);
+    *p = (uint8_t)(*p + 1);  // read+write
   }
-  (void)sink;
 }
 
 int main(int argc, char **argv) {
@@ -75,30 +76,30 @@ int main(int argc, char **argv) {
   build_perm(perm, nlines);
 
   printf("Please type a message.\n");
+  printf("(For Part 2.2: type 0 or 1 and press enter)\n");
 
   bool sending = true;
   while (sending) {
     char text_buf[128];
     if (!fgets(text_buf, sizeof(text_buf), stdin)) break;
 
-    // For Part 2.2, easiest is: type "0" or "1"
-    // Anything non-zero -> send 1
+    // For Part 2.2, simplest: send 1 if non-zero, else 0
     int bit = string_to_int(text_buf) ? 1 : 0;
 
     uint64_t now = rdtsc64();
     uint64_t slot_start = (now / SLOT_CYCLES + 1) * SLOT_CYCLES;
     uint64_t slot_end   = slot_start + SLOT_CYCLES;
 
-    // align to slot boundary
+    // Align to slot boundary
     wait_until(slot_start);
 
     if (bit == 1) {
-      // thrash continuously until slot ends
+      // Thrash continuously until slot ends
       while (rdtsc64() < slot_end) {
         thrash((char*)buf, perm, nlines);
       }
     } else {
-      // idle until slot ends
+      // Idle until slot ends
       wait_until(slot_end);
     }
   }
