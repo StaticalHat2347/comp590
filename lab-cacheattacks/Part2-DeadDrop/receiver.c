@@ -30,6 +30,10 @@
 #define DIFF_MIN_CONFIDENCE_FLOOR 200000ULL
 #define DIFF_MIN_CONFIDENCE_CEIL 1200000ULL
 #define DIFF_CONFIRM_WINDOWS 2
+#define LIVE_CONFIRM_WINDOWS 2
+#define LIVE_STARTUP_GUARD_WINDOWS 4
+#define LIVE_ON_MIN_DELTA 50000ULL
+#define LIVE_OFF_MIN_DELTA 25000ULL
 
 typedef enum {
   RX_MODE_BYTE = 0,
@@ -171,6 +175,11 @@ int main(int argc, char **argv)
 
   uint64_t active_threshold_cycles = baseline_cycles + margin_cycles + NOISE_PAD_CYCLES;
   uint64_t diff_min_confidence = (spread_cycles * 2ULL) + 50000ULL;
+  uint64_t live_on_threshold = baseline_cycles + spread_cycles + LIVE_ON_MIN_DELTA;
+  uint64_t live_off_threshold = baseline_cycles + (spread_cycles / 2ULL) + LIVE_OFF_MIN_DELTA;
+  if (live_off_threshold >= live_on_threshold) {
+    live_off_threshold = live_on_threshold - 1;
+  }
   if (diff_min_confidence < DIFF_MIN_CONFIDENCE_FLOOR) {
     diff_min_confidence = DIFF_MIN_CONFIDENCE_FLOOR;
   }
@@ -198,6 +207,11 @@ int main(int argc, char **argv)
   if (diff_mode) {
     printf("Differential confidence threshold: %llu cycles\n", (unsigned long long)diff_min_confidence);
   }
+  if (live_mode) {
+    printf("Live mode thresholds: on=%llu off=%llu cycles\n",
+           (unsigned long long)live_on_threshold,
+           (unsigned long long)live_off_threshold);
+  }
 
   enum {
     WAIT_PREAMBLE = 0,
@@ -207,6 +221,7 @@ int main(int argc, char **argv)
   int stable_bit = 0;
   int candidate_bit = 0;
   int candidate_count = 0;
+  int startup_guard = LIVE_STARTUP_GUARD_WINDOWS;
 
   if (single_bit_mode && (diff_mode || live_mode)) {
     printf("Received bit: 0\n");
@@ -215,20 +230,34 @@ int main(int argc, char **argv)
 
   while (keep_running) {
     if (live_mode && single_bit_mode) {
-      int bit_active = 0;
+      uint64_t busy_sum = 0;
       for (int r = 0; r < BIT_REPS; r++) {
-        if (sample_slot_active(buf, active_threshold_cycles)) {
-          bit_active++;
+        busy_sum += sample_slot_cycles(buf);
+      }
+      uint64_t busy_avg = busy_sum / BIT_REPS;
+      if (startup_guard > 0) {
+        startup_guard--;
+        continue;
+      }
+
+      int observed_bit = stable_bit;
+      if (stable_bit == 0) {
+        if (busy_avg >= live_on_threshold) {
+          observed_bit = 1;
+        }
+      } else {
+        if (busy_avg <= live_off_threshold) {
+          observed_bit = 0;
         }
       }
-      int observed_bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
+
       if (observed_bit == candidate_bit) {
         candidate_count++;
       } else {
         candidate_bit = observed_bit;
         candidate_count = 1;
       }
-      if (candidate_count >= 2 && candidate_bit != stable_bit) {
+      if (candidate_count >= LIVE_CONFIRM_WINDOWS && candidate_bit != stable_bit) {
         stable_bit = candidate_bit;
         printf("Received bit: %d\n", stable_bit);
         fflush(stdout);
