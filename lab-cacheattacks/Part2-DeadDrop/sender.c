@@ -23,7 +23,8 @@
 typedef enum {
   TX_MODE_BYTE = 0,
   TX_MODE_SINGLE_BIT = 1,
-  TX_MODE_SINGLE_BIT_DIFF = 2
+  TX_MODE_SINGLE_BIT_DIFF = 2,
+  TX_MODE_SINGLE_BIT_LIVE = 3
 } tx_mode_t;
 
 static inline uint64_t monotonic_ns(void)
@@ -134,6 +135,18 @@ static void tx_bit_diff(volatile unsigned char *buf, int bit)
   }
 }
 
+static void tx_bit_live(volatile unsigned char *buf, int bit)
+{
+  const int live_slots = 12;
+  for (int i = 0; i < live_slots; i++) {
+    if (bit) {
+      tx_active_slot(buf);
+    } else {
+      tx_idle_slot();
+    }
+  }
+}
+
 static bool parse_uint8_line(char *line, uint8_t *value)
 {
   char *endptr;
@@ -167,6 +180,9 @@ static bool parse_bit_line(char *line, int *bit)
 static tx_mode_t parse_tx_mode(int argc, char **argv)
 {
   for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--single-bit-live") == 0) {
+      return TX_MODE_SINGLE_BIT_LIVE;
+    }
     if (strcmp(argv[i], "--single-bit-diff") == 0) {
       return TX_MODE_SINGLE_BIT_DIFF;
     }
@@ -182,6 +198,7 @@ int main(int argc, char **argv)
   tx_mode_t mode = parse_tx_mode(argc, argv);
   bool single_bit_mode = (mode != TX_MODE_BYTE);
   bool diff_mode = (mode == TX_MODE_SINGLE_BIT_DIFF);
+  bool live_mode = (mode == TX_MODE_SINGLE_BIT_LIVE);
 
   int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
   volatile unsigned char *buf =
@@ -196,7 +213,9 @@ int main(int argc, char **argv)
   }
 
   if (single_bit_mode) {
-    if (diff_mode) {
+    if (live_mode) {
+      printf("Single-bit live mode. Type 0 or 1 per line (or quit).\n");
+    } else if (diff_mode) {
       printf("Single-bit differential mode. Type 0 or 1 per line (or quit).\n");
     } else {
       printf("Single-bit mode. Type 0 or 1 per line (or quit).\n");
@@ -220,7 +239,9 @@ int main(int argc, char **argv)
         printf("Invalid input. Enter 0 or 1.\n");
         continue;
       }
-      if (diff_mode) {
+      if (live_mode) {
+        tx_bit_live(buf, bit);
+      } else if (diff_mode) {
         tx_bit_diff(buf, bit);
       } else {
         tx_bit(buf, bit);

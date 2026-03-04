@@ -34,7 +34,8 @@
 typedef enum {
   RX_MODE_BYTE = 0,
   RX_MODE_SINGLE_BIT = 1,
-  RX_MODE_SINGLE_BIT_DIFF = 2
+  RX_MODE_SINGLE_BIT_DIFF = 2,
+  RX_MODE_SINGLE_BIT_LIVE = 3
 } rx_mode_t;
 
 static volatile sig_atomic_t keep_running = 1;
@@ -108,6 +109,9 @@ static void sort_u64(uint64_t *arr, int n)
 static rx_mode_t parse_rx_mode(int argc, char **argv)
 {
   for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--single-bit-live") == 0) {
+      return RX_MODE_SINGLE_BIT_LIVE;
+    }
     if (strcmp(argv[i], "--single-bit-diff") == 0) {
       return RX_MODE_SINGLE_BIT_DIFF;
     }
@@ -123,6 +127,7 @@ int main(int argc, char **argv)
   rx_mode_t mode = parse_rx_mode(argc, argv);
   bool single_bit_mode = (mode != RX_MODE_BYTE);
   bool diff_mode = (mode == RX_MODE_SINGLE_BIT_DIFF);
+  bool live_mode = (mode == RX_MODE_SINGLE_BIT_LIVE);
 
   int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
   volatile unsigned char *buf =
@@ -175,7 +180,9 @@ int main(int argc, char **argv)
 
   printf("Receiver now listening.\n");
   if (single_bit_mode) {
-    if (diff_mode) {
+    if (live_mode) {
+      printf("Single-bit live mode enabled.\n");
+    } else if (diff_mode) {
       printf("Single-bit differential mode enabled.\n");
     } else {
       printf("Single-bit mode enabled.\n");
@@ -201,12 +208,34 @@ int main(int argc, char **argv)
   int candidate_bit = 0;
   int candidate_count = 0;
 
-  if (diff_mode && single_bit_mode) {
+  if (single_bit_mode && (diff_mode || live_mode)) {
     printf("Received bit: 0\n");
     fflush(stdout);
   }
 
   while (keep_running) {
+    if (live_mode && single_bit_mode) {
+      int bit_active = 0;
+      for (int r = 0; r < BIT_REPS; r++) {
+        if (sample_slot_active(buf, active_threshold_cycles)) {
+          bit_active++;
+        }
+      }
+      int observed_bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
+      if (observed_bit == candidate_bit) {
+        candidate_count++;
+      } else {
+        candidate_bit = observed_bit;
+        candidate_count = 1;
+      }
+      if (candidate_count >= 2 && candidate_bit != stable_bit) {
+        stable_bit = candidate_bit;
+        printf("Received bit: %d\n", stable_bit);
+        fflush(stdout);
+      }
+      continue;
+    }
+
     if (diff_mode && single_bit_mode) {
       int64_t score = 0;
       for (int r = 0; r < BIT_REPS; r++) {
