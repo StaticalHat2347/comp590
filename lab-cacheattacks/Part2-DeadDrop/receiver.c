@@ -1,214 +1,123 @@
 #include "util.h"
 #include <sys/mman.h>
-#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
 
-#ifndef MAP_POPULATE
-#define MAP_POPULATE 0
-#endif
+#define BUFF_SIZE     (1<<21)     // 2 MiB hugepage
+#define LINE_SIZE     64          // typical cache line
+#define PROBE_LINES   4096        // 4096 lines * 64B = 256 KiB probe footprint
+#define SLOT_CYCLES   200000      // bit slot length (tune 100k-400k)
+#define GUARD_CYCLES  20000       // skip boundary jitter at start of slot
 
-#ifndef MAP_HUGETLB
-#define MAP_HUGETLB 0
-#endif
-
-#define BUFF_SIZE (1 << 21)
-#define CACHE_LINE_BYTES 64
-#define WORKING_SET_LINES (BUFF_SIZE / CACHE_LINE_BYTES)
-
-#define SLOT_NS 120000000ULL
-#define PROBE_TOUCHES 4096
-
-#define PREAMBLE_SLOTS 12
-#define PREAMBLE_MIN_ACTIVE 10
-#define GAP_SLOTS 4
-#define GAP_MAX_ACTIVE 1
-#define BIT_SLOTS 2
-#define FRAME_GAP_SLOTS 4
-#define FRAME_GAP_MAX_ACTIVE 1
-
-#define CALIBRATION_SAMPLES 80
-#define MIN_MARGIN_CYCLES 30000ULL
-#define MAX_MARGIN_CYCLES 180000ULL
-
-static volatile sig_atomic_t keep_running = 1;
-
-static void handle_sigint(int sig)
-{
-  (void)sig;
-  keep_running = 0;
+// --- TSC helpers ---
+static inline uint64_t rdtsc64(void) {
+  uint32_t lo, hi;
+  asm volatile("lfence\n\trdtsc\n\t" : "=a"(lo), "=d"(hi) :: "memory");
+  return ((uint64_t)hi << 32) | lo;
 }
 
-static inline uint64_t monotonic_ns(void)
-{
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
+static inline void wait_until(uint64_t t) {
+  while (rdtsc64() < t) { /* spin */ }
 }
 
-static inline void sleep_ns(uint64_t ns)
-{
-  struct timespec ts;
-  ts.tv_sec = (time_t)(ns / 1000000000ULL);
-  ts.tv_nsec = (long)(ns % 1000000000ULL);
-  nanosleep(&ts, NULL);
-}
-
-static uint64_t probe_once_cycles(volatile unsigned char *buf)
-{
-  unsigned idx = 7;
-  uint64_t total_cycles = 0;
-
-  for (int i = 0; i < PROBE_TOUCHES; i++) {
-    idx = (idx * 1103515245u + 12345u) & (WORKING_SET_LINES - 1);
-    total_cycles += (uint64_t)measure_one_block_access_time((ADDR_PTR)(buf + idx * CACHE_LINE_BYTES));
-  }
-
-  return total_cycles;
-}
-
-static uint64_t sample_slot_cycles(volatile unsigned char *buf)
-{
-  uint64_t slot_start = monotonic_ns();
-  uint64_t busy_cycles = probe_once_cycles(buf);
-  uint64_t elapsed_ns = monotonic_ns() - slot_start;
-
-  if (elapsed_ns < SLOT_NS) {
-    sleep_ns(SLOT_NS - elapsed_ns);
-  }
-
-  return busy_cycles;
-}
-
-static bool sample_slot_active(volatile unsigned char *buf, uint64_t threshold_cycles)
-{
-  uint64_t busy_cycles = sample_slot_cycles(buf);
-  return busy_cycles >= threshold_cycles;
-}
-
-static void sort_u64(uint64_t *arr, int n)
-{
-  for (int i = 1; i < n; i++) {
-    uint64_t key = arr[i];
-    int j = i - 1;
-    while (j >= 0 && arr[j] > key) {
-      arr[j + 1] = arr[j];
-      j--;
-    }
-    arr[j + 1] = key;
-  }
-}
-
-int main(int argc, char **argv)
-{
-  (void)argc;
-  (void)argv;
-
-  int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
-  volatile unsigned char *buf =
-      (volatile unsigned char *)mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
-  if ((void *)buf == (void *)-1) {
-    perror("mmap() error\n");
+// --- hugepage alloc ---
+static void *alloc_hugepage(void) {
+  void *buf = mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE,
+                   MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB,
+                   -1, 0);
+  if (buf == (void*)-1) {
+    perror("mmap");
     exit(EXIT_FAILURE);
   }
 
-  for (int i = 0; i < BUFF_SIZE; i += CACHE_LINE_BYTES) {
-    buf[i] = (unsigned char)(i & 0xFF);
+  // trigger allocation + reduce first-touch noise
+  *((volatile char*)buf) = 1;
+  return buf;
+}
+
+// --- permutation builder to reduce prefetcher effects ---
+static void build_perm(uint32_t *idx, uint32_t n) {
+  for (uint32_t i = 0; i < n; i++) idx[i] = i;
+
+  uint32_t x = 0x12345678u; // deterministic seed
+  for (uint32_t i = n - 1; i > 0; i--) {
+    // xorshift32
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+
+    uint32_t j = x % (i + 1);
+    uint32_t tmp = idx[i];
+    idx[i] = idx[j];
+    idx[j] = tmp;
   }
+}
+
+// Measure average access time (cycles) across many cache lines in this slot
+static uint32_t measure_slot(char *buf, uint32_t *perm, uint32_t nlines) {
+  uint64_t sum = 0;
+  for (uint32_t k = 0; k < nlines; k++) {
+    char *p = buf + (perm[k] * LINE_SIZE);
+    sum += measure_one_block_access_time((ADDR_PTR)p);
+  }
+  return (uint32_t)(sum / nlines);
+}
+
+int main(int argc, char **argv) {
+  // Setup
+  void *buf = alloc_hugepage();
+
+  uint32_t nlines = PROBE_LINES;
+  uint32_t *perm = (uint32_t*)malloc(nlines * sizeof(uint32_t));
+  if (!perm) {
+    perror("malloc");
+    exit(EXIT_FAILURE);
+  }
+  build_perm(perm, nlines);
 
   printf("Please press enter.\n");
+
   char text_buf[2];
   fgets(text_buf, sizeof(text_buf), stdin);
 
-  signal(SIGINT, handle_sigint);
-
-  uint64_t samples[CALIBRATION_SAMPLES];
-  for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
-    samples[i] = sample_slot_cycles(buf);
-  }
-
-  sort_u64(samples, CALIBRATION_SAMPLES);
-  uint64_t p50_cycles = samples[CALIBRATION_SAMPLES / 2];
-  uint64_t p90_cycles = samples[(CALIBRATION_SAMPLES * 9) / 10];
-  uint64_t spread_cycles = (p90_cycles > p50_cycles) ? (p90_cycles - p50_cycles) : 0;
-
-  uint64_t margin_cycles = spread_cycles + MIN_MARGIN_CYCLES;
-  if (margin_cycles < MIN_MARGIN_CYCLES) {
-    margin_cycles = MIN_MARGIN_CYCLES;
-  }
-  if (margin_cycles > MAX_MARGIN_CYCLES) {
-    margin_cycles = MAX_MARGIN_CYCLES;
-  }
-
-  uint64_t active_threshold_cycles = p90_cycles + margin_cycles;
-
   printf("Receiver now listening.\n");
-  printf("Busy p50: %llu cycles, p90 idle: %llu cycles, active threshold: %llu cycles\n",
-         (unsigned long long)p50_cycles,
-         (unsigned long long)p90_cycles,
-         (unsigned long long)active_threshold_cycles);
 
-  enum {
-    WAIT_PREAMBLE = 0,
-    WAIT_GAP = 1,
-    READ_BITS = 2
-  } state = WAIT_PREAMBLE;
+  // --- Quick baseline calibration (sender should ideally be idle here) ---
+  uint64_t now = rdtsc64();
+  uint64_t slot0 = (now / SLOT_CYCLES + 1) * SLOT_CYCLES;
 
-  while (keep_running) {
-    if (state == WAIT_PREAMBLE) {
-      int active_cnt = 0;
-      for (int i = 0; i < PREAMBLE_SLOTS; i++) {
-        if (sample_slot_active(buf, active_threshold_cycles)) {
-          active_cnt++;
-        }
-      }
-      if (active_cnt >= PREAMBLE_MIN_ACTIVE) {
-        state = WAIT_GAP;
-      }
-      continue;
-    }
+  uint32_t baseline = 0;
+  for (int i = 0; i < 10; i++) {
+    uint64_t start = slot0 + (uint64_t)i * SLOT_CYCLES;
+    wait_until(start + GUARD_CYCLES);
+    baseline += measure_slot((char*)buf, perm, nlines);
+  }
+  baseline /= 10;
 
-    if (state == WAIT_GAP) {
-      int gap_active = 0;
-      for (int i = 0; i < GAP_SLOTS; i++) {
-        if (sample_slot_active(buf, active_threshold_cycles)) {
-          gap_active++;
-        }
-      }
-      if (gap_active <= GAP_MAX_ACTIVE) {
-        state = READ_BITS;
-      } else {
-        state = WAIT_PREAMBLE;
-      }
-      continue;
-    }
+  // Conservative threshold; tune if needed
+  uint32_t threshold = baseline + 20;
 
-    if (state == READ_BITS) {
-      uint8_t value = 0;
+  // Optional debug:
+  // fprintf(stderr, "[receiver] baseline=%u threshold=%u\n", baseline, threshold);
 
-      for (int b = 0; b < 8; b++) {
-        int bit_active = 0;
-        for (int i = 0; i < BIT_SLOTS; i++) {
-          if (sample_slot_active(buf, active_threshold_cycles)) {
-            bit_active++;
-          }
-        }
-        int bit = (bit_active >= 1) ? 1 : 0;
-        value = (uint8_t)((value << 1) | bit);
-      }
+  bool listening = true;
+  while (listening) {
+    uint64_t t = rdtsc64();
+    uint64_t slot_start = (t / SLOT_CYCLES + 1) * SLOT_CYCLES;
 
-      int frame_gap_active = 0;
-      for (int i = 0; i < FRAME_GAP_SLOTS; i++) {
-        if (sample_slot_active(buf, active_threshold_cycles)) {
-          frame_gap_active++;
-        }
-      }
+    wait_until(slot_start + GUARD_CYCLES);
+    uint32_t avg = measure_slot((char*)buf, perm, nlines);
 
-      if (frame_gap_active <= FRAME_GAP_MAX_ACTIVE) {
-        printf("%u\n", (unsigned)value);
-        fflush(stdout);
-      }
+    int bit = (avg > threshold) ? 1 : 0;
 
-      state = WAIT_PREAMBLE;
-    }
+    // Print decoded bit
+    printf("%d\n", bit);
+    fflush(stdout);
+
+    // Wait out the rest of the slot so we stay aligned
+    wait_until(slot_start + SLOT_CYCLES);
   }
 
   printf("Receiver finished.\n");
