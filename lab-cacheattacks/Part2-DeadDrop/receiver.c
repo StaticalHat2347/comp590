@@ -18,7 +18,7 @@
 #define PROBE_TOUCHES 4096
 
 #define PREAMBLE_SLOTS 10
-#define PREAMBLE_MIN_ACTIVE 8
+#define PREAMBLE_MIN_ACTIVE 7
 #define GAP_SLOTS 2
 #define GAP_MAX_ACTIVE 1
 #define BIT_REPS 3
@@ -208,7 +208,9 @@ int main(int argc, char **argv)
         }
       }
 
-      if (gap_active <= GAP_MAX_ACTIVE) {
+      if (diff_mode) {
+        state = READ_BITS;
+      } else if (gap_active <= GAP_MAX_ACTIVE) {
         state = READ_BITS;
       } else {
         state = WAIT_PREAMBLE;
