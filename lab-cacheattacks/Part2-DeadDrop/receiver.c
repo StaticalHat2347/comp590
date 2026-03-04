@@ -18,7 +18,7 @@
 #define PROBE_TOUCHES 4096
 
 #define PREAMBLE_SLOTS 10
-#define PREAMBLE_MIN_ACTIVE 7
+#define PREAMBLE_MIN_ACTIVE 9
 #define GAP_SLOTS 2
 #define GAP_MAX_ACTIVE 1
 #define BIT_REPS 3
@@ -198,22 +198,6 @@ int main(int argc, char **argv)
   } state = WAIT_PREAMBLE;
 
   while (keep_running) {
-    if (diff_mode && single_bit_mode) {
-      int64_t score = 0;
-      for (int r = 0; r < BIT_REPS; r++) {
-        uint64_t first = sample_slot_cycles(buf);
-        uint64_t second = sample_slot_cycles(buf);
-        score += (int64_t)first - (int64_t)second;
-      }
-
-      if ((uint64_t)llabs(score) >= diff_min_confidence) {
-        int bit = (score > 0) ? 1 : 0;
-        printf("Received bit: %d\n", bit);
-        fflush(stdout);
-      }
-      continue;
-    }
-
     if (state == WAIT_PREAMBLE) {
       int active_cnt = 0;
       for (int i = 0; i < PREAMBLE_SLOTS; i++) {
@@ -250,15 +234,17 @@ int main(int argc, char **argv)
       if (single_bit_mode) {
         int bit;
         if (diff_mode) {
-          int one_votes = 0;
+          int64_t score = 0;
           for (int r = 0; r < BIT_REPS; r++) {
             uint64_t first = sample_slot_cycles(buf);
             uint64_t second = sample_slot_cycles(buf);
-            if (first > second) {
-              one_votes++;
-            }
+            score += (int64_t)first - (int64_t)second;
           }
-          bit = (one_votes >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
+          if ((uint64_t)llabs(score) < diff_min_confidence) {
+            state = WAIT_PREAMBLE;
+            continue;
+          }
+          bit = (score > 0) ? 1 : 0;
         } else {
           int bit_active = 0;
           for (int r = 0; r < BIT_REPS; r++) {
