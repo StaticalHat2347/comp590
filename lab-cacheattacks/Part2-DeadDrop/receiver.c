@@ -8,10 +8,10 @@
 #define BUFF_SIZE       (1<<21)
 #define LINE_SIZE       64
 
-#define PROBE_LINES     16384
-#define SLOT_CYCLES     400000
-#define GUARD_CYCLES    50000
-#define THRESH_MARGIN   50
+#define PROBE_LINES     1024
+
+#define SLOT_CYCLES     5000000ULL
+#define GUARD_CYCLES    200000ULL
 
 #define PREAMBLE_BYTE   0xAA  /* 10101010 */
 
@@ -23,6 +23,10 @@ static inline uint64_t rdtsc64(void) {
 
 static inline void wait_until(uint64_t t) {
   while (rdtsc64() < t) { }
+}
+
+static inline uint64_t next_slot_boundary(uint64_t now) {
+  return (now / SLOT_CYCLES + 1) * SLOT_CYCLES;
 }
 
 static void *alloc_hugepage(void) {
@@ -62,8 +66,16 @@ static uint32_t measure_slot(char *buf, uint32_t *perm, uint32_t nlines) {
   return (uint32_t)(sum / nlines);
 }
 
-static inline uint64_t next_slot_boundary(uint64_t now) {
-  return (now / SLOT_CYCLES + 1) * SLOT_CYCLES;
+static uint32_t avg_over_n_slots(char *buf, uint32_t *perm, uint32_t nlines, int n) {
+  uint64_t acc = 0;
+  for (int i = 0; i < n; i++) {
+    uint64_t t = rdtsc64();
+    uint64_t slot_start = next_slot_boundary(t);
+    wait_until(slot_start + GUARD_CYCLES);
+    acc += measure_slot(buf, perm, nlines);
+    wait_until(slot_start + SLOT_CYCLES);
+  }
+  return (uint32_t)(acc / (uint64_t)n);
 }
 
 int main(int argc, char **argv) {
@@ -83,21 +95,23 @@ int main(int argc, char **argv) {
 
   printf("receiver now listening.\n");
 
-  /* calibrate baseline with sender ideally idle */
-  uint64_t now = rdtsc64();
-  uint64_t slot0 = next_slot_boundary(now);
+  /* phase 1: calibrate quiet */
+  fprintf(stderr, "calibration: keep sender idle for a moment.\n");
+  fflush(stderr);
+  uint32_t quiet = avg_over_n_slots((char*)buf, perm, nlines, 10);
 
-  uint32_t baseline = 0;
-  for (int i = 0; i < 10; i++) {
-    uint64_t start = slot0 + (uint64_t)i * SLOT_CYCLES;
-    wait_until(start + GUARD_CYCLES);
-    baseline += measure_slot((char*)buf, perm, nlines);
-  }
-  baseline /= 10;
+  /* phase 2: calibrate busy */
+  fprintf(stderr, "calibration: in sender, type 1 once and press enter.\n");
+  fflush(stderr);
+  uint32_t busy = avg_over_n_slots((char*)buf, perm, nlines, 10);
 
-  uint32_t threshold = baseline + THRESH_MARGIN;
+  /* choose threshold halfway between quiet and busy */
+  uint32_t threshold = (quiet + busy) / 2;
 
-  /* state machine: hunt preamble, then read one data byte */
+  fprintf(stderr, "calib quiet=%u busy=%u thr=%u\n", quiet, busy, threshold);
+  fflush(stderr);
+
+  /* state machine: hunt preamble, then read one payload byte */
   enum { HUNT_PREAMBLE = 0, READ_DATA = 1 } state = HUNT_PREAMBLE;
 
   uint8_t shift = 0;
@@ -115,24 +129,19 @@ int main(int argc, char **argv) {
 
     int bit = (avg > threshold) ? 1 : 0;
 
-    /* adapt baseline only when we believe channel is quiet */
-    if (bit == 0) {
-      baseline = (baseline * 9 + avg) / 10;
-      threshold = baseline + THRESH_MARGIN;
-    }
-
     if (state == HUNT_PREAMBLE) {
-      /* shift in bits until we see the preamble byte */
       shift = (uint8_t)((shift << 1) | (bit & 1));
       if (shift_bits < 8) shift_bits++;
 
       if (shift_bits == 8 && shift == PREAMBLE_BYTE) {
+        fprintf(stderr, "preamble locked\n");
+        fflush(stderr);
+
         state = READ_DATA;
         data = 0;
         data_bits = 0;
       }
     } else {
-      /* read exactly 8 bits for the payload byte */
       data = (uint8_t)((data << 1) | (bit & 1));
       data_bits++;
 
@@ -140,7 +149,6 @@ int main(int argc, char **argv) {
         printf("%u\n", (unsigned)data);
         fflush(stdout);
 
-        /* reset to hunt the next message */
         state = HUNT_PREAMBLE;
         shift = 0;
         shift_bits = 0;

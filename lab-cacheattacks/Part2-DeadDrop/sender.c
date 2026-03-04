@@ -2,14 +2,14 @@
 #include <sys/mman.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <stdint.h>
 
 #define BUFF_SIZE       (1<<21)
 #define LINE_SIZE       64
 
 #define THRASH_LINES    32768
-#define SLOT_CYCLES     400000
+
+#define SLOT_CYCLES     5000000ULL
 
 #define PREAMBLE_BYTE   0xAA  /* 10101010 */
 
@@ -106,17 +106,17 @@ int main(int argc, char **argv) {
     if (val < 0) val = 0;
     if (val > 255) val = 255;
 
-    /* send a short quiet gap to help receiver baseline stay stable */
-    for (int i = 0; i < 4; i++) {
+    /* quiet gap before frame */
+    for (int i = 0; i < 6; i++) {
       send_bit((char*)buf, perm, nlines, 0);
     }
 
-    /* transmit frame: preamble then payload byte */
+    /* frame: preamble then payload */
     send_byte((char*)buf, perm, nlines, (uint8_t)PREAMBLE_BYTE);
     send_byte((char*)buf, perm, nlines, (uint8_t)val);
 
-    /* trailing gap */
-    for (int i = 0; i < 4; i++) {
+    /* quiet gap after frame */
+    for (int i = 0; i < 6; i++) {
       send_bit((char*)buf, perm, nlines, 0);
     }
   }
