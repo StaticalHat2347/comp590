@@ -27,6 +27,8 @@
 #define MIN_MARGIN_CYCLES 50000ULL
 #define MAX_MARGIN_CYCLES 300000ULL
 #define NOISE_PAD_CYCLES 20000ULL
+#define DIFF_MIN_CONFIDENCE_FLOOR 80000ULL
+#define DIFF_MIN_CONFIDENCE_CEIL 800000ULL
 
 typedef enum {
   RX_MODE_BYTE = 0,
@@ -162,6 +164,13 @@ int main(int argc, char **argv)
   }
 
   uint64_t active_threshold_cycles = baseline_cycles + margin_cycles + NOISE_PAD_CYCLES;
+  uint64_t diff_min_confidence = (spread_cycles * 2ULL) + 50000ULL;
+  if (diff_min_confidence < DIFF_MIN_CONFIDENCE_FLOOR) {
+    diff_min_confidence = DIFF_MIN_CONFIDENCE_FLOOR;
+  }
+  if (diff_min_confidence > DIFF_MIN_CONFIDENCE_CEIL) {
+    diff_min_confidence = DIFF_MIN_CONFIDENCE_CEIL;
+  }
 
   printf("Receiver now listening.\n");
   if (single_bit_mode) {
@@ -178,6 +187,9 @@ int main(int argc, char **argv)
          (unsigned long long)p90_cycles,
          (unsigned long long)active_threshold_cycles,
          (unsigned long long)max_busy_cycles);
+  if (diff_mode) {
+    printf("Differential confidence threshold: %llu cycles\n", (unsigned long long)diff_min_confidence);
+  }
 
   enum {
     WAIT_PREAMBLE = 0,
@@ -186,6 +198,22 @@ int main(int argc, char **argv)
   } state = WAIT_PREAMBLE;
 
   while (keep_running) {
+    if (diff_mode && single_bit_mode) {
+      int64_t score = 0;
+      for (int r = 0; r < BIT_REPS; r++) {
+        uint64_t first = sample_slot_cycles(buf);
+        uint64_t second = sample_slot_cycles(buf);
+        score += (int64_t)first - (int64_t)second;
+      }
+
+      if ((uint64_t)llabs(score) >= diff_min_confidence) {
+        int bit = (score > 0) ? 1 : 0;
+        printf("Received bit: %d\n", bit);
+        fflush(stdout);
+      }
+      continue;
+    }
+
     if (state == WAIT_PREAMBLE) {
       int active_cnt = 0;
       for (int i = 0; i < PREAMBLE_SLOTS; i++) {
