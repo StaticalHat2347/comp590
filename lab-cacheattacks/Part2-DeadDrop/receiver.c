@@ -95,23 +95,25 @@ int main(int argc, char **argv) {
 
   printf("receiver now listening.\n");
 
-  /* phase 1: calibrate quiet */
-  fprintf(stderr, "calibration: keep sender idle for a moment.\n");
+  /* calibrate quiet */
+  fprintf(stderr, "calibration: keep sender idle.\n");
   fflush(stderr);
-  uint32_t quiet = avg_over_n_slots((char*)buf, perm, nlines, 10);
+  uint32_t quiet = avg_over_n_slots((char*)buf, perm, nlines, 12);
 
-  /* phase 2: calibrate busy */
-  fprintf(stderr, "calibration: in sender, type 1 once and press enter.\n");
+  /* calibrate busy using sustained thrash */
+  fprintf(stderr, "calibration: in sender, type cal and press enter.\n");
   fflush(stderr);
-  uint32_t busy = avg_over_n_slots((char*)buf, perm, nlines, 10);
+  uint32_t busy = avg_over_n_slots((char*)buf, perm, nlines, 12);
 
-  /* choose threshold halfway between quiet and busy */
-  uint32_t threshold = (quiet + busy) / 2;
+  /* choose threshold mid-point and infer polarity */
+  uint32_t thr = (quiet + busy) / 2;
+  bool one_is_high = (busy > quiet);
 
-  fprintf(stderr, "calib quiet=%u busy=%u thr=%u\n", quiet, busy, threshold);
+  fprintf(stderr, "calib quiet=%u busy=%u thr=%u polarity=%s\n",
+          quiet, busy, thr, one_is_high ? "high" : "low");
   fflush(stderr);
 
-  /* state machine: hunt preamble, then read one payload byte */
+  /* hunt preamble then read one payload byte */
   enum { HUNT_PREAMBLE = 0, READ_DATA = 1 } state = HUNT_PREAMBLE;
 
   uint8_t shift = 0;
@@ -127,16 +129,19 @@ int main(int argc, char **argv) {
     wait_until(slot_start + GUARD_CYCLES);
     uint32_t avg = measure_slot((char*)buf, perm, nlines);
 
-    int bit = (avg > threshold) ? 1 : 0;
+    /* decode bit using calibrated polarity */
+    int bit;
+    if (one_is_high) {
+      bit = (avg > thr) ? 1 : 0;
+    } else {
+      bit = (avg < thr) ? 1 : 0;
+    }
 
     if (state == HUNT_PREAMBLE) {
       shift = (uint8_t)((shift << 1) | (bit & 1));
       if (shift_bits < 8) shift_bits++;
 
       if (shift_bits == 8 && shift == PREAMBLE_BYTE) {
-        fprintf(stderr, "preamble locked\n");
-        fflush(stderr);
-
         state = READ_DATA;
         data = 0;
         data_bits = 0;

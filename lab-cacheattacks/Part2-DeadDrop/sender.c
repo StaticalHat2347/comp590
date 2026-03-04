@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 #define BUFF_SIZE       (1<<21)
 #define LINE_SIZE       64
@@ -85,6 +86,24 @@ static void send_byte(char *buf, uint32_t *perm, uint32_t nlines, uint8_t b) {
   }
 }
 
+static void send_frame(char *buf, uint32_t *perm, uint32_t nlines, uint8_t val) {
+  /* quiet gap before frame */
+  for (int i = 0; i < 6; i++) send_bit(buf, perm, nlines, 0);
+
+  /* preamble then payload */
+  send_byte(buf, perm, nlines, (uint8_t)PREAMBLE_BYTE);
+  send_byte(buf, perm, nlines, val);
+
+  /* quiet gap after frame */
+  for (int i = 0; i < 6; i++) send_bit(buf, perm, nlines, 0);
+}
+
+static void send_calibration_burst(char *buf, uint32_t *perm, uint32_t nlines) {
+  /* sustained thrash across many slots for stable calibration */
+  for (int i = 0; i < 16; i++) send_bit(buf, perm, nlines, 1);
+  for (int i = 0; i < 8; i++)  send_bit(buf, perm, nlines, 0);
+}
+
 int main(int argc, char **argv) {
   void *buf = alloc_hugepage();
 
@@ -96,29 +115,23 @@ int main(int argc, char **argv) {
   }
   build_perm(perm, nlines);
 
-  printf("please type a number (0-255).\n");
+  printf("please type a number (0-255), or cal.\n");
 
   while (true) {
     char text_buf[128];
     if (!fgets(text_buf, sizeof(text_buf), stdin)) break;
 
+    /* handle calibration command */
+    if (strncmp(text_buf, "cal", 3) == 0) {
+      send_calibration_burst((char*)buf, perm, nlines);
+      continue;
+    }
+
     int val = string_to_int(text_buf);
     if (val < 0) val = 0;
     if (val > 255) val = 255;
 
-    /* quiet gap before frame */
-    for (int i = 0; i < 6; i++) {
-      send_bit((char*)buf, perm, nlines, 0);
-    }
-
-    /* frame: preamble then payload */
-    send_byte((char*)buf, perm, nlines, (uint8_t)PREAMBLE_BYTE);
-    send_byte((char*)buf, perm, nlines, (uint8_t)val);
-
-    /* quiet gap after frame */
-    for (int i = 0; i < 6; i++) {
-      send_bit((char*)buf, perm, nlines, 0);
-    }
+    send_frame((char*)buf, perm, nlines, (uint8_t)val);
   }
 
   return 0;
