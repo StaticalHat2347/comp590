@@ -27,8 +27,9 @@
 #define MIN_MARGIN_CYCLES 50000ULL
 #define MAX_MARGIN_CYCLES 300000ULL
 #define NOISE_PAD_CYCLES 20000ULL
-#define DIFF_MIN_CONFIDENCE_FLOOR 80000ULL
-#define DIFF_MIN_CONFIDENCE_CEIL 800000ULL
+#define DIFF_MIN_CONFIDENCE_FLOOR 200000ULL
+#define DIFF_MIN_CONFIDENCE_CEIL 1200000ULL
+#define DIFF_CONFIRM_WINDOWS 2
 
 typedef enum {
   RX_MODE_BYTE = 0,
@@ -196,8 +197,40 @@ int main(int argc, char **argv)
     WAIT_GAP = 1,
     READ_BITS = 2
   } state = WAIT_PREAMBLE;
+  int stable_bit = 0;
+  int candidate_bit = 0;
+  int candidate_count = 0;
+
+  if (diff_mode && single_bit_mode) {
+    printf("Received bit: 0\n");
+    fflush(stdout);
+  }
 
   while (keep_running) {
+    if (diff_mode && single_bit_mode) {
+      int64_t score = 0;
+      for (int r = 0; r < BIT_REPS; r++) {
+        uint64_t first = sample_slot_cycles(buf);
+        uint64_t second = sample_slot_cycles(buf);
+        score += (int64_t)first - (int64_t)second;
+      }
+
+      int observed_bit = (score > (int64_t)diff_min_confidence) ? 1 : 0;
+      if (observed_bit == candidate_bit) {
+        candidate_count++;
+      } else {
+        candidate_bit = observed_bit;
+        candidate_count = 1;
+      }
+
+      if (candidate_count >= DIFF_CONFIRM_WINDOWS && candidate_bit != stable_bit) {
+        stable_bit = candidate_bit;
+        printf("Received bit: %d\n", stable_bit);
+        fflush(stdout);
+      }
+      continue;
+    }
+
     if (state == WAIT_PREAMBLE) {
       int active_cnt = 0;
       for (int i = 0; i < PREAMBLE_SLOTS; i++) {
