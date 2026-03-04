@@ -20,6 +20,12 @@
 #define BIT_REPS 3
 #define FRAME_GAP_SLOTS 3
 
+typedef enum {
+  TX_MODE_BYTE = 0,
+  TX_MODE_SINGLE_BIT = 1,
+  TX_MODE_SINGLE_BIT_DIFF = 2
+} tx_mode_t;
+
 static inline uint64_t monotonic_ns(void)
 {
   struct timespec ts;
@@ -103,6 +109,31 @@ static void tx_bit(volatile unsigned char *buf, int bit)
   }
 }
 
+static void tx_bit_diff(volatile unsigned char *buf, int bit)
+{
+  for (int i = 0; i < PREAMBLE_SLOTS; i++) {
+    tx_active_slot(buf);
+  }
+
+  for (int i = 0; i < GAP_SLOTS; i++) {
+    tx_idle_slot();
+  }
+
+  for (int r = 0; r < BIT_REPS; r++) {
+    if (bit) {
+      tx_active_slot(buf);
+      tx_idle_slot();
+    } else {
+      tx_idle_slot();
+      tx_active_slot(buf);
+    }
+  }
+
+  for (int i = 0; i < FRAME_GAP_SLOTS; i++) {
+    tx_idle_slot();
+  }
+}
+
 static bool parse_uint8_line(char *line, uint8_t *value)
 {
   char *endptr;
@@ -133,9 +164,24 @@ static bool parse_bit_line(char *line, int *bit)
   return true;
 }
 
+static tx_mode_t parse_tx_mode(int argc, char **argv)
+{
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--single-bit-diff") == 0) {
+      return TX_MODE_SINGLE_BIT_DIFF;
+    }
+    if (strcmp(argv[i], "--single-bit") == 0) {
+      return TX_MODE_SINGLE_BIT;
+    }
+  }
+  return TX_MODE_BYTE;
+}
+
 int main(int argc, char **argv)
 {
-  bool single_bit_mode = (argc > 1 && strcmp(argv[1], "--single-bit") == 0);
+  tx_mode_t mode = parse_tx_mode(argc, argv);
+  bool single_bit_mode = (mode != TX_MODE_BYTE);
+  bool diff_mode = (mode == TX_MODE_SINGLE_BIT_DIFF);
 
   int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
   volatile unsigned char *buf =
@@ -150,7 +196,11 @@ int main(int argc, char **argv)
   }
 
   if (single_bit_mode) {
-    printf("Single-bit mode. Type 0 or 1 per line (or quit).\n");
+    if (diff_mode) {
+      printf("Single-bit differential mode. Type 0 or 1 per line (or quit).\n");
+    } else {
+      printf("Single-bit mode. Type 0 or 1 per line (or quit).\n");
+    }
   } else {
     printf("Byte mode. Type an integer in [0,255] per line (or quit).\n");
   }
@@ -170,7 +220,11 @@ int main(int argc, char **argv)
         printf("Invalid input. Enter 0 or 1.\n");
         continue;
       }
-      tx_bit(buf, bit);
+      if (diff_mode) {
+        tx_bit_diff(buf, bit);
+      } else {
+        tx_bit(buf, bit);
+      }
     } else {
       uint8_t value;
       if (!parse_uint8_line(text_buf, &value)) {

@@ -28,6 +28,12 @@
 #define MAX_MARGIN_CYCLES 300000ULL
 #define NOISE_PAD_CYCLES 20000ULL
 
+typedef enum {
+  RX_MODE_BYTE = 0,
+  RX_MODE_SINGLE_BIT = 1,
+  RX_MODE_SINGLE_BIT_DIFF = 2
+} rx_mode_t;
+
 static volatile sig_atomic_t keep_running = 1;
 
 static void handle_sigint(int sig)
@@ -96,9 +102,24 @@ static void sort_u64(uint64_t *arr, int n)
   }
 }
 
+static rx_mode_t parse_rx_mode(int argc, char **argv)
+{
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--single-bit-diff") == 0) {
+      return RX_MODE_SINGLE_BIT_DIFF;
+    }
+    if (strcmp(argv[i], "--single-bit") == 0) {
+      return RX_MODE_SINGLE_BIT;
+    }
+  }
+  return RX_MODE_BYTE;
+}
+
 int main(int argc, char **argv)
 {
-  bool single_bit_mode = (argc > 1 && strcmp(argv[1], "--single-bit") == 0);
+  rx_mode_t mode = parse_rx_mode(argc, argv);
+  bool single_bit_mode = (mode != RX_MODE_BYTE);
+  bool diff_mode = (mode == RX_MODE_SINGLE_BIT_DIFF);
 
   int mmap_flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
   volatile unsigned char *buf =
@@ -144,7 +165,11 @@ int main(int argc, char **argv)
 
   printf("Receiver now listening.\n");
   if (single_bit_mode) {
-    printf("Single-bit mode enabled.\n");
+    if (diff_mode) {
+      printf("Single-bit differential mode enabled.\n");
+    } else {
+      printf("Single-bit mode enabled.\n");
+    }
   } else {
     printf("Byte mode enabled.\n");
   }
@@ -193,13 +218,26 @@ int main(int argc, char **argv)
 
     if (state == READ_BITS) {
       if (single_bit_mode) {
-        int bit_active = 0;
-        for (int r = 0; r < BIT_REPS; r++) {
-          if (sample_slot_active(buf, active_threshold_cycles)) {
-            bit_active++;
+        int bit;
+        if (diff_mode) {
+          int one_votes = 0;
+          for (int r = 0; r < BIT_REPS; r++) {
+            uint64_t first = sample_slot_cycles(buf);
+            uint64_t second = sample_slot_cycles(buf);
+            if (first > second) {
+              one_votes++;
+            }
           }
+          bit = (one_votes >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
+        } else {
+          int bit_active = 0;
+          for (int r = 0; r < BIT_REPS; r++) {
+            if (sample_slot_active(buf, active_threshold_cycles)) {
+              bit_active++;
+            }
+          }
+          bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
         }
-        int bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
         printf("Received bit: %d\n", bit);
         fflush(stdout);
       } else {
