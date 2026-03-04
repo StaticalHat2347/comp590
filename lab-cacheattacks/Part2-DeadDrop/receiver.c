@@ -254,7 +254,7 @@ int main(int argc, char **argv)
           int bit = (bit_active >= ((BIT_REPS + 1) / 2)) ? 1 : 0;
           value = (uint8_t)((value << 1) | bit);
         }
-        printf("Received: %u\n", (unsigned)value);
+        printf("%u\n", (unsigned)value);
         fflush(stdout);
       }
 

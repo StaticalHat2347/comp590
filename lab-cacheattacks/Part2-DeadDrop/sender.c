@@ -202,7 +202,7 @@ int main(int argc, char **argv)
       printf("Single-bit mode. Type 0 or 1 per line (or quit).\n");
     }
   } else {
-    printf("Byte mode. Type an integer in [0,255] per line (or quit).\n");
+    printf("Please type a message.\n");
   }
 
   while (true) {
