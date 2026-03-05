@@ -1,5 +1,6 @@
 #include "util.h"
 #include <sys/mman.h>
+#include <errno.h>
 
 #ifndef MAP_POPULATE
 #define MAP_POPULATE 0
@@ -11,30 +12,27 @@
 
 #define BUFF_SIZE (1 << 21)
 #define LINE_SIZE 64
+#define THRASH_LINES (BUFF_SIZE / LINE_SIZE)
 
-#define THRASH_LINES 32768
-
-#define SLOT_CYCLES 5000000ULL
-
-#define PREAMBLE_BYTE 0xAA
+#define SLOT_NS 60000000ULL
+#define PREAMBLE_SLOTS 8
+#define GAP_SLOTS 2
 #define BIT_REP 5
+#define TRAIL_SLOTS 3
 
-static inline uint64_t rdtsc64(void)
+static inline uint64_t monotonic_ns(void)
 {
-  uint32_t lo, hi;
-  asm volatile("lfence\n\trdtsc\n\t" : "=a"(lo), "=d"(hi) :: "memory");
-  return ((uint64_t)hi << 32) | lo;
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
 }
 
-static inline void wait_until(uint64_t t)
+static inline void sleep_ns(uint64_t ns)
 {
-  while (rdtsc64() < t) {
-  }
-}
-
-static inline uint64_t next_slot_boundary(uint64_t now)
-{
-  return (now / SLOT_CYCLES + 1) * SLOT_CYCLES;
+  struct timespec ts;
+  ts.tv_sec = (time_t)(ns / 1000000000ULL);
+  ts.tv_nsec = (long)(ns % 1000000000ULL);
+  nanosleep(&ts, NULL);
 }
 
 static void *alloc_buffer(void)
@@ -49,7 +47,6 @@ static void *alloc_buffer(void)
     perror("mmap");
     exit(EXIT_FAILURE);
   }
-  *((volatile char *)buf) = 1;
   return buf;
 }
 
@@ -71,74 +68,82 @@ static void build_perm(uint32_t *idx, uint32_t n)
   }
 }
 
-static void thrash(char *buf, const uint32_t *perm, uint32_t nlines)
+static inline void thrash_once(char *buf, const uint32_t *perm, uint32_t nlines)
 {
+  static volatile uint8_t sink = 0;
   for (uint32_t k = 0; k < nlines; k++) {
     volatile uint8_t *p = (volatile uint8_t *)(buf + ((size_t)perm[k] * LINE_SIZE));
-    *p = (uint8_t)(*p + 1);
+    sink ^= *p;
   }
 }
 
-static void send_physical_bit(char *buf, const uint32_t *perm, uint32_t nlines, int bit)
+static void tx_active_slot(char *buf, const uint32_t *perm, uint32_t nlines)
 {
-  uint64_t now = rdtsc64();
-  uint64_t slot_start = next_slot_boundary(now);
-  uint64_t slot_end = slot_start + SLOT_CYCLES;
-
-  wait_until(slot_start);
-
-  if (bit) {
-    while (rdtsc64() < slot_end) {
-      thrash(buf, perm, nlines);
-    }
-  } else {
-    wait_until(slot_end);
+  uint64_t end_ns = monotonic_ns() + SLOT_NS;
+  while (monotonic_ns() < end_ns) {
+    thrash_once(buf, perm, nlines);
   }
 }
 
-static void send_logical_bit(char *buf, const uint32_t *perm, uint32_t nlines, int bit)
+static void tx_idle_slots(int nslots)
+{
+  sleep_ns(SLOT_NS * (uint64_t)nslots);
+}
+
+static void tx_logical_bit(char *buf, const uint32_t *perm, uint32_t nlines, int bit)
 {
   for (int r = 0; r < BIT_REP; r++) {
-    send_physical_bit(buf, perm, nlines, bit);
+    if (bit) {
+      tx_active_slot(buf, perm, nlines);
+    } else {
+      tx_idle_slots(1);
+    }
   }
 }
 
-static void send_byte(char *buf, const uint32_t *perm, uint32_t nlines, uint8_t b)
+static void tx_frame(char *buf, const uint32_t *perm, uint32_t nlines, uint8_t value)
 {
-  for (int i = 7; i >= 0; i--) {
-    int bit = (b >> i) & 1;
-    send_logical_bit(buf, perm, nlines, bit);
+  for (int i = 0; i < PREAMBLE_SLOTS; i++) {
+    tx_active_slot(buf, perm, nlines);
   }
+
+  tx_idle_slots(GAP_SLOTS);
+
+  for (int b = 7; b >= 0; b--) {
+    int bit = (value >> b) & 1;
+    tx_logical_bit(buf, perm, nlines, bit);
+  }
+
+  tx_idle_slots(TRAIL_SLOTS);
 }
 
-static void send_calibration_burst(char *buf, const uint32_t *perm, uint32_t nlines)
+static bool parse_u8_line(const char *line, uint8_t *value)
 {
-  for (int i = 0; i < 40; i++) {
-    send_physical_bit(buf, perm, nlines, 1);
-  }
-  for (int i = 0; i < 20; i++) {
-    send_physical_bit(buf, perm, nlines, 0);
-  }
-}
-
-static void send_frame(char *buf, const uint32_t *perm, uint32_t nlines, uint8_t val)
-{
-  for (int i = 0; i < 8; i++) {
-    send_physical_bit(buf, perm, nlines, 0);
+  char *endptr;
+  errno = 0;
+  long v = strtol(line, &endptr, 10);
+  if (endptr == line || errno != 0) {
+    return false;
   }
 
-  send_byte(buf, perm, nlines, PREAMBLE_BYTE);
-  send_byte(buf, perm, nlines, PREAMBLE_BYTE);
-  send_byte(buf, perm, nlines, val);
-
-  for (int i = 0; i < 8; i++) {
-    send_physical_bit(buf, perm, nlines, 0);
+  while (*endptr == ' ' || *endptr == '\t' || *endptr == '\n' || *endptr == '\r') {
+    endptr++;
   }
+  if (*endptr != '\0' || v < 0 || v > 255) {
+    return false;
+  }
+
+  *value = (uint8_t)v;
+  return true;
 }
 
 int main(void)
 {
   char *buf = (char *)alloc_buffer();
+
+  for (int i = 0; i < BUFF_SIZE; i += LINE_SIZE) {
+    buf[i] = (char)(i & 0xFF);
+  }
 
   uint32_t *perm = (uint32_t *)malloc(THRASH_LINES * sizeof(uint32_t));
   if (!perm) {
@@ -147,35 +152,21 @@ int main(void)
   }
   build_perm(perm, THRASH_LINES);
 
-  printf("Please type a number (0-255), or cal.\n");
+  printf("Please type an integer in [0,255] per line (or quit).\n");
 
   char line[128];
   while (fgets(line, sizeof(line), stdin)) {
-    char *p = line;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
-      p++;
-    }
-    if (*p == '[') {
-      p++;
-    }
-    while (*p == ' ' || *p == '\t') {
-      p++;
+    if (strncmp(line, "quit", 4) == 0 || strncmp(line, "exit", 4) == 0) {
+      break;
     }
 
-    if (strncmp(p, "cal", 3) == 0) {
-      send_calibration_burst(buf, perm, THRASH_LINES);
+    uint8_t value;
+    if (!parse_u8_line(line, &value)) {
+      printf("Invalid input. Enter an integer in [0,255].\n");
       continue;
     }
 
-    int val = string_to_int(p);
-    if (val < 0) {
-      val = 0;
-    }
-    if (val > 255) {
-      val = 255;
-    }
-
-    send_frame(buf, perm, THRASH_LINES, (uint8_t)val);
+    tx_frame(buf, perm, THRASH_LINES, value);
   }
 
   return 0;

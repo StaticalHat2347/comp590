@@ -1,5 +1,6 @@
 #include "util.h"
 #include <sys/mman.h>
+#include <signal.h>
 
 #ifndef MAP_POPULATE
 #define MAP_POPULATE 0
@@ -11,38 +12,39 @@
 
 #define BUFF_SIZE (1 << 21)
 #define LINE_SIZE 64
-
 #define PROBE_LINES 512
 
-#define SLOT_CYCLES 5000000ULL
-#define GUARD_CYCLES 200000ULL
+#define SLOT_NS 60000000ULL
+#define CALIBRATION_SLOTS 64
+#define THRESHOLD_MARGIN 8
 
-#define PREAMBLE_BYTE 0xAA
-
+#define PREAMBLE_SLOTS 8
+#define PREAMBLE_MIN_ACTIVE 7
+#define GAP_SLOTS 2
+#define GAP_MAX_ACTIVE 0
 #define BIT_REP 5
-#define PREAMBLE_HITS 2
 
-#define DETECT_DELTA 20
-#define DETECT_RUN 8
-#define QUIET_SLOTS 20
-#define BUSY_SLOTS 20
+static volatile sig_atomic_t keep_running = 1;
 
-static inline uint64_t rdtsc64(void)
+static void handle_sigint(int sig)
 {
-  uint32_t lo, hi;
-  asm volatile("lfence\n\trdtsc\n\t" : "=a"(lo), "=d"(hi) :: "memory");
-  return ((uint64_t)hi << 32) | lo;
+  (void)sig;
+  keep_running = 0;
 }
 
-static inline void wait_until(uint64_t t)
+static inline uint64_t monotonic_ns(void)
 {
-  while (rdtsc64() < t) {
-  }
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
 }
 
-static inline uint64_t next_slot_boundary(uint64_t now)
+static inline void sleep_ns(uint64_t ns)
 {
-  return (now / SLOT_CYCLES + 1) * SLOT_CYCLES;
+  struct timespec ts;
+  ts.tv_sec = (time_t)(ns / 1000000000ULL);
+  ts.tv_nsec = (long)(ns % 1000000000ULL);
+  nanosleep(&ts, NULL);
 }
 
 static void *alloc_buffer(void)
@@ -57,7 +59,6 @@ static void *alloc_buffer(void)
     perror("mmap");
     exit(EXIT_FAILURE);
   }
-  *((volatile char *)buf) = 1;
   return buf;
 }
 
@@ -79,7 +80,7 @@ static void build_perm(uint32_t *idx, uint32_t n)
   }
 }
 
-static uint32_t measure_slot(char *buf, const uint32_t *perm, uint32_t nlines)
+static uint32_t measure_avg_cycles(char *buf, const uint32_t *perm, uint32_t nlines)
 {
   uint64_t sum = 0;
   for (uint32_t k = 0; k < nlines; k++) {
@@ -89,121 +90,115 @@ static uint32_t measure_slot(char *buf, const uint32_t *perm, uint32_t nlines)
   return (uint32_t)(sum / nlines);
 }
 
-static uint32_t avg_over_n_slots(char *buf, const uint32_t *perm, uint32_t nlines, int n)
+static uint32_t sample_slot_cycles(char *buf, const uint32_t *perm, uint32_t nlines)
 {
-  uint64_t acc = 0;
-  for (int i = 0; i < n; i++) {
-    uint64_t t = rdtsc64();
-    uint64_t slot_start = next_slot_boundary(t);
-    wait_until(slot_start + GUARD_CYCLES);
-    acc += measure_slot(buf, perm, nlines);
-    wait_until(slot_start + SLOT_CYCLES);
+  uint64_t slot_start = monotonic_ns();
+  uint32_t avg = measure_avg_cycles(buf, perm, nlines);
+  uint64_t elapsed = monotonic_ns() - slot_start;
+  if (elapsed < SLOT_NS) {
+    sleep_ns(SLOT_NS - elapsed);
   }
-  return (uint32_t)(acc / (uint64_t)n);
+  return avg;
 }
 
-static void wait_for_busy_burst_high(char *buf, const uint32_t *perm, uint32_t nlines, uint32_t quiet)
+static void sort_u32(uint32_t *arr, int n)
 {
-  int run = 0;
-  while (true) {
-    uint64_t t = rdtsc64();
-    uint64_t slot_start = next_slot_boundary(t);
-
-    wait_until(slot_start + GUARD_CYCLES);
-    uint32_t avg = measure_slot(buf, perm, nlines);
-
-    if (avg > quiet + DETECT_DELTA) {
-      run++;
-    } else {
-      run = 0;
+  for (int i = 1; i < n; i++) {
+    uint32_t key = arr[i];
+    int j = i - 1;
+    while (j >= 0 && arr[j] > key) {
+      arr[j + 1] = arr[j];
+      j--;
     }
-
-    if (run >= DETECT_RUN) {
-      return;
-    }
-
-    wait_until(slot_start + SLOT_CYCLES);
+    arr[j + 1] = key;
   }
 }
 
-static int recv_logical_bit(
-    char *buf, const uint32_t *perm, uint32_t nlines, uint32_t thr, bool one_is_high)
+static uint32_t calibrate_threshold(char *buf, const uint32_t *perm, uint32_t nlines)
 {
-  int ones = 0;
-  for (int r = 0; r < BIT_REP; r++) {
-    uint64_t t = rdtsc64();
-    uint64_t slot_start = next_slot_boundary(t);
-
-    wait_until(slot_start + GUARD_CYCLES);
-    uint32_t avg = measure_slot(buf, perm, nlines);
-    int bit = one_is_high ? (avg > thr) : (avg < thr);
-    ones += bit ? 1 : 0;
-
-    wait_until(slot_start + SLOT_CYCLES);
+  uint32_t samples[CALIBRATION_SLOTS];
+  for (int i = 0; i < CALIBRATION_SLOTS; i++) {
+    samples[i] = sample_slot_cycles(buf, perm, nlines);
   }
-  return (ones > (BIT_REP / 2)) ? 1 : 0;
+
+  sort_u32(samples, CALIBRATION_SLOTS);
+  uint32_t median = samples[CALIBRATION_SLOTS / 2];
+  uint32_t p90 = samples[(CALIBRATION_SLOTS * 9) / 10];
+  uint32_t threshold = p90 + THRESHOLD_MARGIN;
+
+  printf("Receiver now listening.\n");
+  printf("Idle median: %u, idle p90: %u, active threshold: %u\n",
+         median, p90, threshold);
+  fflush(stdout);
+
+  return threshold;
 }
 
-static uint8_t recv_byte(
-    char *buf, const uint32_t *perm, uint32_t nlines, uint32_t thr, bool one_is_high)
+static inline bool is_active(uint32_t avg_cycles, uint32_t threshold)
 {
-  uint8_t b = 0;
-  for (int i = 0; i < 8; i++) {
-    int bit = recv_logical_bit(buf, perm, nlines, thr, one_is_high);
-    b = (uint8_t)((b << 1) | (bit & 1));
-  }
-  return b;
+  return avg_cycles >= threshold;
 }
 
 int main(void)
 {
   char *buf = (char *)alloc_buffer();
+  for (int i = 0; i < BUFF_SIZE; i += LINE_SIZE) {
+    buf[i] = (char)(i & 0xFF);
+  }
 
-  uint32_t nlines = PROBE_LINES;
-  uint32_t *perm = (uint32_t *)malloc(nlines * sizeof(uint32_t));
+  uint32_t *perm = (uint32_t *)malloc(PROBE_LINES * sizeof(uint32_t));
   if (!perm) {
     perror("malloc");
     exit(EXIT_FAILURE);
   }
-  build_perm(perm, nlines);
+  build_perm(perm, PROBE_LINES);
 
   printf("Please press enter.\n");
   char tmp[8];
   fgets(tmp, sizeof(tmp), stdin);
 
-  printf("Receiver now listening.\n");
+  signal(SIGINT, handle_sigint);
+  uint32_t threshold = calibrate_threshold(buf, perm, PROBE_LINES);
 
-  fprintf(stderr, "Calibration: keep sender idle.\n");
-  fflush(stderr);
-  uint32_t quiet = avg_over_n_slots(buf, perm, nlines, QUIET_SLOTS);
-
-  fprintf(stderr, "Calibration: in sender, type cal.\n");
-  fflush(stderr);
-  wait_for_busy_burst_high(buf, perm, nlines, quiet);
-
-  uint32_t busy = avg_over_n_slots(buf, perm, nlines, BUSY_SLOTS);
-  bool one_is_high = (busy > quiet);
-  uint32_t thr = (quiet + busy) / 2;
-  fprintf(stderr, "Calib quiet=%u busy=%u thr=%u polarity=%s\n",
-          quiet, busy, thr, one_is_high ? "high" : "low");
-  fflush(stderr);
-
-  int hits = 0;
-  while (true) {
-    uint8_t b = recv_byte(buf, perm, nlines, thr, one_is_high);
-
-    if (hits < PREAMBLE_HITS) {
-      if (b == PREAMBLE_BYTE) {
-        hits++;
-      } else {
-        hits = 0;
+  while (keep_running) {
+    int preamble_active = 0;
+    for (int i = 0; i < PREAMBLE_SLOTS; i++) {
+      uint32_t avg = sample_slot_cycles(buf, perm, PROBE_LINES);
+      if (is_active(avg, threshold)) {
+        preamble_active++;
       }
+    }
+    if (preamble_active < PREAMBLE_MIN_ACTIVE) {
       continue;
     }
 
-    uint8_t val = recv_byte(buf, perm, nlines, thr, one_is_high);
-    printf("Received: %u\n", (unsigned)val);
+    int gap_active = 0;
+    for (int i = 0; i < GAP_SLOTS; i++) {
+      uint32_t avg = sample_slot_cycles(buf, perm, PROBE_LINES);
+      if (is_active(avg, threshold)) {
+        gap_active++;
+      }
+    }
+    if (gap_active > GAP_MAX_ACTIVE) {
+      continue;
+    }
+
+    uint8_t value = 0;
+    for (int b = 0; b < 8; b++) {
+      int ones = 0;
+      for (int r = 0; r < BIT_REP; r++) {
+        uint32_t avg = sample_slot_cycles(buf, perm, PROBE_LINES);
+        if (is_active(avg, threshold)) {
+          ones++;
+        }
+      }
+      int bit = (ones * 2 >= BIT_REP) ? 1 : 0;
+      value = (uint8_t)((value << 1) | bit);
+    }
+
+    printf("Received: %u\n", (unsigned)value);
     fflush(stdout);
-    hits = 0;
   }
+
+  return 0;
 }
