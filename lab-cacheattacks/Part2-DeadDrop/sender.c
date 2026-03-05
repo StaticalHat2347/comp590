@@ -151,12 +151,23 @@ int main(void)
 
   char line[128];
   while (fgets(line, sizeof(line), stdin)) {
-    if (strncmp(line, "cal", 3) == 0) {
+    char *p = line;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+      p++;
+    }
+    if (*p == '[') {
+      p++;
+    }
+    while (*p == ' ' || *p == '\t') {
+      p++;
+    }
+
+    if (strncmp(p, "cal", 3) == 0) {
       send_calibration_burst(buf, perm, THRASH_LINES);
       continue;
     }
 
-    int val = string_to_int(line);
+    int val = string_to_int(p);
     if (val < 0) {
       val = 0;
     }
