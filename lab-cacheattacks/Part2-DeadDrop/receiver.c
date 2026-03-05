@@ -14,8 +14,6 @@
 #define GUARD_CYCLES    200000ULL
 
 #define PREAMBLE_BYTE   0xAA  /* 10101010 */
-
-/* each logical bit is repeated this many slots */
 #define BIT_REP         3
 
 static inline uint64_t rdtsc64(void) {
@@ -122,17 +120,21 @@ int main(int argc, char **argv) {
   build_perm(perm, nlines);
 
   printf("please press enter.\n");
-  char tmp[2];
-  fgets(tmp, sizeof(tmp), stdin);
+  char line[32];
+  fgets(line, sizeof(line), stdin);
 
   printf("receiver now listening.\n");
 
+  /* quiet calibration */
   fprintf(stderr, "calibration: keep sender idle.\n");
   fflush(stderr);
   uint32_t quiet = avg_over_n_slots((char*)buf, perm, nlines, 12);
 
-  fprintf(stderr, "calibration: in sender, type cal and press enter.\n");
+  /* handshaked busy calibration */
+  fprintf(stderr, "calibration: start sender, type cal, then press enter here.\n");
   fflush(stderr);
+  fgets(line, sizeof(line), stdin);
+
   uint32_t busy = avg_over_n_slots((char*)buf, perm, nlines, 12);
 
   uint32_t thr = (quiet + busy) / 2;
@@ -154,12 +156,10 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    /* after lock, next byte is the payload */
     uint8_t val = recv_byte((char*)buf, perm, nlines, thr, one_is_high);
     printf("%u\n", (unsigned)val);
     fflush(stdout);
 
-    /* reset and hunt again */
     preamble_hits = 0;
   }
 
