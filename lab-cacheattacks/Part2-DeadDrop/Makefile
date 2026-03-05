@@ -1,6 +1,6 @@
 include ../cpu.mk
 
-TARGETS=receiver sender 
+TARGETS=receiver sender receiver_osc sender_osc
 UTILS=util.o 
 
 all: $(TARGETS)
@@ -19,6 +19,12 @@ run_sender: sender
 
 run_receiver: receiver
 	taskset -c $(RECEIVER_CPU) ./receiver
+
+run_sender_osc: sender_osc
+	taskset -c $(SENDER_CPU) ./sender_osc
+
+run_receiver_osc: receiver_osc
+	taskset -c $(RECEIVER_CPU) ./receiver_osc
 
 .PHONY:	clean
 
