@@ -22,10 +22,10 @@
 #define BIT_REP 5
 #define PREAMBLE_HITS 2
 
-#define DETECT_DELTA 10
-#define DETECT_RUN 6
-#define QUIET_SLOTS 12
-#define BUSY_SLOTS 12
+#define DETECT_DELTA 20
+#define DETECT_RUN 8
+#define QUIET_SLOTS 20
+#define BUSY_SLOTS 20
 
 static inline uint64_t rdtsc64(void)
 {
@@ -102,7 +102,7 @@ static uint32_t avg_over_n_slots(char *buf, const uint32_t *perm, uint32_t nline
   return (uint32_t)(acc / (uint64_t)n);
 }
 
-static void wait_for_busy_burst(char *buf, const uint32_t *perm, uint32_t nlines, uint32_t quiet)
+static void wait_for_busy_burst_high(char *buf, const uint32_t *perm, uint32_t nlines, uint32_t quiet)
 {
   int run = 0;
   while (true) {
@@ -112,8 +112,7 @@ static void wait_for_busy_burst(char *buf, const uint32_t *perm, uint32_t nlines
     wait_until(slot_start + GUARD_CYCLES);
     uint32_t avg = measure_slot(buf, perm, nlines);
 
-    uint32_t diff = (avg > quiet) ? (avg - quiet) : (quiet - avg);
-    if (diff >= DETECT_DELTA) {
+    if (avg > quiet + DETECT_DELTA) {
       run++;
     } else {
       run = 0;
@@ -127,7 +126,8 @@ static void wait_for_busy_burst(char *buf, const uint32_t *perm, uint32_t nlines
   }
 }
 
-static int recv_logical_bit(char *buf, const uint32_t *perm, uint32_t nlines, uint32_t thr)
+static int recv_logical_bit(
+    char *buf, const uint32_t *perm, uint32_t nlines, uint32_t thr, bool one_is_high)
 {
   int ones = 0;
   for (int r = 0; r < BIT_REP; r++) {
@@ -136,18 +136,20 @@ static int recv_logical_bit(char *buf, const uint32_t *perm, uint32_t nlines, ui
 
     wait_until(slot_start + GUARD_CYCLES);
     uint32_t avg = measure_slot(buf, perm, nlines);
-    ones += (avg > thr) ? 1 : 0;
+    int bit = one_is_high ? (avg > thr) : (avg < thr);
+    ones += bit ? 1 : 0;
 
     wait_until(slot_start + SLOT_CYCLES);
   }
   return (ones > (BIT_REP / 2)) ? 1 : 0;
 }
 
-static uint8_t recv_byte(char *buf, const uint32_t *perm, uint32_t nlines, uint32_t thr)
+static uint8_t recv_byte(
+    char *buf, const uint32_t *perm, uint32_t nlines, uint32_t thr, bool one_is_high)
 {
   uint8_t b = 0;
   for (int i = 0; i < 8; i++) {
-    int bit = recv_logical_bit(buf, perm, nlines, thr);
+    int bit = recv_logical_bit(buf, perm, nlines, thr, one_is_high);
     b = (uint8_t)((b << 1) | (bit & 1));
   }
   return b;
@@ -177,16 +179,18 @@ int main(void)
 
   fprintf(stderr, "Calibration: in sender, type cal.\n");
   fflush(stderr);
-  wait_for_busy_burst(buf, perm, nlines, quiet);
+  wait_for_busy_burst_high(buf, perm, nlines, quiet);
 
   uint32_t busy = avg_over_n_slots(buf, perm, nlines, BUSY_SLOTS);
+  bool one_is_high = (busy > quiet);
   uint32_t thr = (quiet + busy) / 2;
-  fprintf(stderr, "Calib quiet=%u busy=%u thr=%u polarity=high\n", quiet, busy, thr);
+  fprintf(stderr, "Calib quiet=%u busy=%u thr=%u polarity=%s\n",
+          quiet, busy, thr, one_is_high ? "high" : "low");
   fflush(stderr);
 
   int hits = 0;
   while (true) {
-    uint8_t b = recv_byte(buf, perm, nlines, thr);
+    uint8_t b = recv_byte(buf, perm, nlines, thr, one_is_high);
 
     if (hits < PREAMBLE_HITS) {
       if (b == PREAMBLE_BYTE) {
@@ -197,7 +201,7 @@ int main(void)
       continue;
     }
 
-    uint8_t val = recv_byte(buf, perm, nlines, thr);
+    uint8_t val = recv_byte(buf, perm, nlines, thr, one_is_high);
     printf("Received: %u\n", (unsigned)val);
     fflush(stdout);
     hits = 0;
