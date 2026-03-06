@@ -10,12 +10,12 @@
 #define MAP_HUGETLB 0
 #endif
 
-#define BUFF_SIZE (1 << 21)
+#define BUFF_SIZE (1 << 23)
 #define LINE_SIZE 64
 #define THRASH_LINES (BUFF_SIZE / LINE_SIZE)
 
 #define SLOT_NS 60000000ULL
-#define PREAMBLE_SLOTS 8
+#define PREAMBLE_SLOTS 10
 #define GAP_SLOTS 2
 #define BIT_REP 5
 #define TRAIL_SLOTS 3
