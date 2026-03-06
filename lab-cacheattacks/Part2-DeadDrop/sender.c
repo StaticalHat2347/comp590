@@ -19,6 +19,8 @@
 #define GAP_SLOTS 2
 #define BIT_REP 5
 #define TRAIL_SLOTS 3
+#define FRAME_REPS 3
+#define INTERFRAME_GAP_SLOTS 5
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -166,7 +168,10 @@ int main(void)
       continue;
     }
 
-    tx_frame(buf, perm, THRASH_LINES, value);
+    for (int rep = 0; rep < FRAME_REPS; rep++) {
+      tx_frame(buf, perm, THRASH_LINES, value);
+      tx_idle_slots(INTERFRAME_GAP_SLOTS);
+    }
   }
 
   return 0;

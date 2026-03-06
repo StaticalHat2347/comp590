@@ -16,10 +16,10 @@
 
 #define SLOT_NS 60000000ULL
 #define CALIBRATION_SLOTS 64
-#define THRESHOLD_MARGIN 6
+#define THRESHOLD_MARGIN 3
 
 #define PREAMBLE_SLOTS 10
-#define PREAMBLE_MIN_ACTIVE 8
+#define PREAMBLE_MIN_ACTIVE 7
 #define GAP_SLOTS 2
 #define GAP_MAX_ACTIVE 1
 #define BIT_REP 5
@@ -176,7 +176,7 @@ int main(void)
     }
     if (preamble_active < PREAMBLE_MIN_ACTIVE) {
       idle_windows++;
-      if ((idle_windows % 32) == 0 && threshold > min_threshold) {
+      if ((idle_windows % 8) == 0 && threshold > min_threshold) {
         threshold--;
       }
       continue;
