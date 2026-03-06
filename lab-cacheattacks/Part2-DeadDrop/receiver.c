@@ -10,18 +10,18 @@
 #define MAP_HUGETLB 0
 #endif
 
-#define BUFF_SIZE (1 << 23)
+#define BUFF_SIZE (1 << 21)
 #define LINE_SIZE 64
-#define PROBE_LINES 2048
+#define PROBE_LINES 512
 
 #define SLOT_NS 60000000ULL
 #define CALIBRATION_SLOTS 64
-#define THRESHOLD_MARGIN 3
+#define THRESHOLD_MARGIN 8
 
-#define PREAMBLE_SLOTS 10
+#define PREAMBLE_SLOTS 8
 #define PREAMBLE_MIN_ACTIVE 7
 #define GAP_SLOTS 2
-#define GAP_MAX_ACTIVE 1
+#define GAP_MAX_ACTIVE 0
 #define BIT_REP 5
 
 static volatile sig_atomic_t keep_running = 1;
@@ -114,8 +114,7 @@ static void sort_u32(uint32_t *arr, int n)
   }
 }
 
-static uint32_t calibrate_threshold(
-    char *buf, const uint32_t *perm, uint32_t nlines, uint32_t *min_threshold_out)
+static uint32_t calibrate_threshold(char *buf, const uint32_t *perm, uint32_t nlines)
 {
   uint32_t samples[CALIBRATION_SLOTS];
   for (int i = 0; i < CALIBRATION_SLOTS; i++) {
@@ -124,15 +123,12 @@ static uint32_t calibrate_threshold(
 
   sort_u32(samples, CALIBRATION_SLOTS);
   uint32_t median = samples[CALIBRATION_SLOTS / 2];
-  uint32_t p75 = samples[(CALIBRATION_SLOTS * 3) / 4];
   uint32_t p90 = samples[(CALIBRATION_SLOTS * 9) / 10];
-  uint32_t threshold = p75 + THRESHOLD_MARGIN;
-  uint32_t min_threshold = p75 + 2;
-  *min_threshold_out = min_threshold;
+  uint32_t threshold = p90 + THRESHOLD_MARGIN;
 
   printf("Receiver now listening.\n");
-  printf("Idle median: %u, idle p75: %u, idle p90: %u, active threshold: %u\n",
-         median, p75, p90, threshold);
+  printf("Idle median: %u, idle p90: %u, active threshold: %u\n",
+         median, p90, threshold);
   fflush(stdout);
 
   return threshold;
@@ -162,9 +158,7 @@ int main(void)
   fgets(tmp, sizeof(tmp), stdin);
 
   signal(SIGINT, handle_sigint);
-  uint32_t min_threshold = 0;
-  uint32_t threshold = calibrate_threshold(buf, perm, PROBE_LINES, &min_threshold);
-  int idle_windows = 0;
+  uint32_t threshold = calibrate_threshold(buf, perm, PROBE_LINES);
 
   while (keep_running) {
     int preamble_active = 0;
@@ -175,13 +169,8 @@ int main(void)
       }
     }
     if (preamble_active < PREAMBLE_MIN_ACTIVE) {
-      idle_windows++;
-      if ((idle_windows % 8) == 0 && threshold > min_threshold) {
-        threshold--;
-      }
       continue;
     }
-    idle_windows = 0;
 
     int gap_active = 0;
     for (int i = 0; i < GAP_SLOTS; i++) {

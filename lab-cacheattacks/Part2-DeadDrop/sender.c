@@ -10,17 +10,15 @@
 #define MAP_HUGETLB 0
 #endif
 
-#define BUFF_SIZE (1 << 23)
+#define BUFF_SIZE (1 << 21)
 #define LINE_SIZE 64
 #define THRASH_LINES (BUFF_SIZE / LINE_SIZE)
 
 #define SLOT_NS 60000000ULL
-#define PREAMBLE_SLOTS 10
+#define PREAMBLE_SLOTS 8
 #define GAP_SLOTS 2
 #define BIT_REP 5
 #define TRAIL_SLOTS 3
-#define FRAME_REPS 3
-#define INTERFRAME_GAP_SLOTS 5
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -168,10 +166,7 @@ int main(void)
       continue;
     }
 
-    for (int rep = 0; rep < FRAME_REPS; rep++) {
-      tx_frame(buf, perm, THRASH_LINES, value);
-      tx_idle_slots(INTERFRAME_GAP_SLOTS);
-    }
+    tx_frame(buf, perm, THRASH_LINES, value);
   }
 
   return 0;
