@@ -16,7 +16,7 @@
 
 #define SLOT_NS 60000000ULL
 #define CALIBRATION_SLOTS 64
-#define THRESHOLD_MARGIN 8
+#define THRESHOLD_MARGIN 6
 
 #define PREAMBLE_SLOTS 8
 #define PREAMBLE_MIN_ACTIVE 5
@@ -114,7 +114,8 @@ static void sort_u32(uint32_t *arr, int n)
   }
 }
 
-static uint32_t calibrate_threshold(char *buf, const uint32_t *perm, uint32_t nlines)
+static uint32_t calibrate_threshold(
+    char *buf, const uint32_t *perm, uint32_t nlines, uint32_t *min_threshold_out)
 {
   uint32_t samples[CALIBRATION_SLOTS];
   for (int i = 0; i < CALIBRATION_SLOTS; i++) {
@@ -123,12 +124,14 @@ static uint32_t calibrate_threshold(char *buf, const uint32_t *perm, uint32_t nl
 
   sort_u32(samples, CALIBRATION_SLOTS);
   uint32_t median = samples[CALIBRATION_SLOTS / 2];
+  uint32_t p75 = samples[(CALIBRATION_SLOTS * 3) / 4];
   uint32_t p90 = samples[(CALIBRATION_SLOTS * 9) / 10];
-  uint32_t threshold = p90 + THRESHOLD_MARGIN;
+  uint32_t threshold = p75 + THRESHOLD_MARGIN;
+  *min_threshold_out = p75 + 2;
 
   printf("Receiver now listening.\n");
-  printf("Idle median: %u, idle p90: %u, active threshold: %u\n",
-         median, p90, threshold);
+  printf("Idle median: %u, idle p75: %u, idle p90: %u, active threshold: %u\n",
+         median, p75, p90, threshold);
   fflush(stdout);
 
   return threshold;
@@ -158,7 +161,9 @@ int main(void)
   fgets(tmp, sizeof(tmp), stdin);
 
   signal(SIGINT, handle_sigint);
-  uint32_t threshold = calibrate_threshold(buf, perm, PROBE_LINES);
+  uint32_t min_threshold = 0;
+  uint32_t threshold = calibrate_threshold(buf, perm, PROBE_LINES, &min_threshold);
+  int miss_windows = 0;
 
   while (keep_running) {
     int preamble_active = 0;
@@ -169,8 +174,13 @@ int main(void)
       }
     }
     if (preamble_active < PREAMBLE_MIN_ACTIVE) {
+      miss_windows++;
+      if ((miss_windows % 12) == 0 && threshold > min_threshold) {
+        threshold--;
+      }
       continue;
     }
+    miss_windows = 0;
 
     int gap_active = 0;
     for (int i = 0; i < GAP_SLOTS; i++) {
