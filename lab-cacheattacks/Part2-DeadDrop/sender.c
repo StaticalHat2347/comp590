@@ -19,6 +19,7 @@
 #define GAP_SLOTS 2
 #define BIT_REP 5
 #define TRAIL_SLOTS 3
+#define FRAME_REPETITIONS 3
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -166,7 +167,9 @@ int main(void)
       continue;
     }
 
-    tx_frame(buf, perm, THRASH_LINES, value);
+    for (int rep = 0; rep < FRAME_REPETITIONS; rep++) {
+      tx_frame(buf, perm, THRASH_LINES, value);
+    }
   }
 
   return 0;

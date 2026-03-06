@@ -19,9 +19,9 @@
 #define THRESHOLD_MARGIN 8
 
 #define PREAMBLE_SLOTS 8
-#define PREAMBLE_MIN_ACTIVE 7
+#define PREAMBLE_MIN_ACTIVE 5
 #define GAP_SLOTS 2
-#define GAP_MAX_ACTIVE 0
+#define GAP_MAX_ACTIVE 1
 #define BIT_REP 5
 
 static volatile sig_atomic_t keep_running = 1;
