@@ -16,6 +16,7 @@
 
 #define SLOT_NS 45000000ULL
 #define TRAIL_IDLE_SLOTS 4
+#define TX_REPEATS 3
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -121,12 +122,14 @@ static void send_bit(char *buf, const uint32_t *perm, uint32_t nlines, int bit)
 
 static void send_u8(char *buf, const uint32_t *perm, uint32_t nlines, uint8_t value)
 {
-  send_sync(buf, perm, nlines);
-  for (int bit = 7; bit >= 0; bit--) {
-    send_bit(buf, perm, nlines, (value >> bit) & 1);
-  }
-  for (int i = 0; i < TRAIL_IDLE_SLOTS; i++) {
-    send_idle_slot();
+  for (int rep = 0; rep < TX_REPEATS; rep++) {
+    send_sync(buf, perm, nlines);
+    for (int bit = 7; bit >= 0; bit--) {
+      send_bit(buf, perm, nlines, (value >> bit) & 1);
+    }
+    for (int i = 0; i < TRAIL_IDLE_SLOTS; i++) {
+      send_idle_slot();
+    }
   }
 }
 
@@ -162,7 +165,7 @@ int main(void)
   }
   build_perm(perm, ACTIVE_LINES);
 
-  printf("Please type a message.\n");
+  printf("Please type an integer in [0,255] per line (or quit).\n");
   fflush(stdout);
 
   char line[128];
@@ -179,7 +182,7 @@ int main(void)
     }
 
     send_u8(buf, perm, ACTIVE_LINES, value);
-    printf("Please type a message.\n");
+    printf("Please type an integer in [0,255] per line (or quit).\n");
     fflush(stdout);
   }
 

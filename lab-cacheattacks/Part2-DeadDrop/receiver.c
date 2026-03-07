@@ -17,6 +17,7 @@
 #define SLOT_NS 45000000ULL
 #define CALIBRATION_SLOTS 72
 #define THRESHOLD_MARGIN 8
+#define FRAME_CONFIRM 2
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -132,7 +133,7 @@ static inline int slot_is_active(char *buf, const uint32_t *perm, uint32_t nline
   return sample_slot_cycles(buf, perm, nlines) >= thr;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
   char *buf = (char *)alloc_buffer();
   for (int i = 0; i < BUFF_SIZE; i += LINE_SIZE) {
@@ -151,10 +152,25 @@ int main(void)
   fgets(tmp, sizeof(tmp), stdin);
 
   signal(SIGINT, handle_sigint);
-  uint32_t threshold = calibrate_threshold(buf, perm, PROBE_LINES);
+  uint32_t threshold = 0;
+  if (argc > 1) {
+    char *endptr = NULL;
+    unsigned long v = strtoul(argv[1], &endptr, 10);
+    if (endptr && *endptr == '\0' && v > 0 && v < 1000000UL) {
+      threshold = (uint32_t)v;
+      printf("Receiver now listening.\n");
+      printf("Using manual threshold: %u\n", threshold);
+      fflush(stdout);
+    }
+  }
+  if (threshold == 0) {
+    threshold = calibrate_threshold(buf, perm, PROBE_LINES);
+  }
 
   /* sync pattern: 1 1 0 0 1 1 */
   uint8_t shreg = 0;
+  uint8_t last_value = 0;
+  int confirm_count = 0;
   while (keep_running) {
     int active = slot_is_active(buf, perm, PROBE_LINES, threshold);
     shreg = (uint8_t)(((shreg << 1) | (active ? 1 : 0)) & 0x3Fu);
@@ -183,8 +199,18 @@ int main(void)
       continue;
     }
 
-    printf("%u\n", (unsigned)value);
-    fflush(stdout);
+    if (confirm_count == 0 || value != last_value) {
+      last_value = value;
+      confirm_count = 1;
+    } else {
+      confirm_count++;
+    }
+
+    if (confirm_count >= FRAME_CONFIRM) {
+      printf("Received: %u\n", (unsigned)value);
+      fflush(stdout);
+      confirm_count = 0;
+    }
 
     int idle_slots = 0;
     while (keep_running && idle_slots < 3) {
