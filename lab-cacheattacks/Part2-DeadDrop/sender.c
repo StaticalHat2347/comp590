@@ -152,7 +152,7 @@ int main(void)
   }
   build_perm(perm, THRASH_LINES);
 
-  printf("Please type an integer in [0,255] per line (or quit).\n");
+  printf("Please type a message.\n");
 
   char line[128];
   while (fgets(line, sizeof(line), stdin)) {
@@ -167,6 +167,8 @@ int main(void)
     }
 
     tx_frame(buf, perm, THRASH_LINES, value);
+    printf("Please type a message.\n");
+    fflush(stdout);
   }
 
   return 0;

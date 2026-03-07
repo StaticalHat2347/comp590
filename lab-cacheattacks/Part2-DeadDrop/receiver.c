@@ -196,8 +196,18 @@ int main(void)
       value = (uint8_t)((value << 1) | bit);
     }
 
-    printf("Received: %u\n", (unsigned)value);
+    printf("%u\n", (unsigned)value);
     fflush(stdout);
+
+    int idle_seen = 0;
+    while (idle_seen < 2 && keep_running) {
+      uint32_t avg = sample_slot_cycles(buf, perm, PROBE_LINES);
+      if (!is_active(avg, threshold)) {
+        idle_seen++;
+      } else {
+        idle_seen = 0;
+      }
+    }
   }
 
   return 0;
