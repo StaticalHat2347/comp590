@@ -1,6 +1,6 @@
 #include "util.h"
-#include <sys/mman.h>
 #include <signal.h>
+#include <sys/mman.h>
 
 #ifndef MAP_POPULATE
 #define MAP_POPULATE 0
@@ -12,17 +12,11 @@
 
 #define BUFF_SIZE (1 << 21)
 #define LINE_SIZE 64
-#define PROBE_LINES 512
+#define PROBE_LINES 1024
 
-#define SLOT_NS 60000000ULL
-#define CALIBRATION_SLOTS 64
+#define SLOT_NS 45000000ULL
+#define CALIBRATION_SLOTS 72
 #define THRESHOLD_MARGIN 8
-
-#define PREAMBLE_SLOTS 8
-#define PREAMBLE_MIN_ACTIVE 7
-#define GAP_SLOTS 2
-#define GAP_MAX_ACTIVE 0
-#define BIT_REP 5
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -68,7 +62,7 @@ static void build_perm(uint32_t *idx, uint32_t n)
     idx[i] = i;
   }
 
-  uint32_t x = 0x12345678u;
+  uint32_t x = 0x5A5A5A5Au;
   for (uint32_t i = n - 1; i > 0; i--) {
     x ^= x << 13;
     x ^= x >> 17;
@@ -92,9 +86,9 @@ static uint32_t measure_avg_cycles(char *buf, const uint32_t *perm, uint32_t nli
 
 static uint32_t sample_slot_cycles(char *buf, const uint32_t *perm, uint32_t nlines)
 {
-  uint64_t slot_start = monotonic_ns();
+  uint64_t start = monotonic_ns();
   uint32_t avg = measure_avg_cycles(buf, perm, nlines);
-  uint64_t elapsed = monotonic_ns() - slot_start;
+  uint64_t elapsed = monotonic_ns() - start;
   if (elapsed < SLOT_NS) {
     sleep_ns(SLOT_NS - elapsed);
   }
@@ -127,16 +121,15 @@ static uint32_t calibrate_threshold(char *buf, const uint32_t *perm, uint32_t nl
   uint32_t threshold = p90 + THRESHOLD_MARGIN;
 
   printf("Receiver now listening.\n");
-  printf("Idle median: %u, idle p90: %u, active threshold: %u\n",
-         median, p90, threshold);
+  printf("Idle median: %u, idle p90: %u, threshold: %u\n", median, p90, threshold);
   fflush(stdout);
 
   return threshold;
 }
 
-static inline bool is_active(uint32_t avg_cycles, uint32_t threshold)
+static inline int slot_is_active(char *buf, const uint32_t *perm, uint32_t nlines, uint32_t thr)
 {
-  return avg_cycles >= threshold;
+  return sample_slot_cycles(buf, perm, nlines) >= thr;
 }
 
 int main(void)
@@ -160,54 +153,48 @@ int main(void)
   signal(SIGINT, handle_sigint);
   uint32_t threshold = calibrate_threshold(buf, perm, PROBE_LINES);
 
+  /* sync pattern: 1 1 0 0 1 1 */
+  uint8_t shreg = 0;
   while (keep_running) {
-    int preamble_active = 0;
-    for (int i = 0; i < PREAMBLE_SLOTS; i++) {
-      uint32_t avg = sample_slot_cycles(buf, perm, PROBE_LINES);
-      if (is_active(avg, threshold)) {
-        preamble_active++;
-      }
-    }
-    if (preamble_active < PREAMBLE_MIN_ACTIVE) {
-      continue;
-    }
-
-    int gap_active = 0;
-    for (int i = 0; i < GAP_SLOTS; i++) {
-      uint32_t avg = sample_slot_cycles(buf, perm, PROBE_LINES);
-      if (is_active(avg, threshold)) {
-        gap_active++;
-      }
-    }
-    if (gap_active > GAP_MAX_ACTIVE) {
+    int active = slot_is_active(buf, perm, PROBE_LINES, threshold);
+    shreg = (uint8_t)(((shreg << 1) | (active ? 1 : 0)) & 0x3Fu);
+    if (shreg != 0x33u) {
       continue;
     }
 
     uint8_t value = 0;
-    for (int b = 0; b < 8; b++) {
-      int ones = 0;
-      for (int r = 0; r < BIT_REP; r++) {
-        uint32_t avg = sample_slot_cycles(buf, perm, PROBE_LINES);
-        if (is_active(avg, threshold)) {
-          ones++;
-        }
+    int valid = 1;
+    for (int bit = 0; bit < 8; bit++) {
+      int a = slot_is_active(buf, perm, PROBE_LINES, threshold);
+      int b = slot_is_active(buf, perm, PROBE_LINES, threshold);
+
+      if (a && !b) {
+        value = (uint8_t)((value << 1) | 1u);
+      } else if (!a && b) {
+        value = (uint8_t)(value << 1);
+      } else {
+        valid = 0;
+        break;
       }
-      int bit = (ones * 2 >= BIT_REP) ? 1 : 0;
-      value = (uint8_t)((value << 1) | bit);
+    }
+
+    if (!valid) {
+      shreg = 0;
+      continue;
     }
 
     printf("%u\n", (unsigned)value);
     fflush(stdout);
 
-    int idle_seen = 0;
-    while (idle_seen < 2 && keep_running) {
-      uint32_t avg = sample_slot_cycles(buf, perm, PROBE_LINES);
-      if (!is_active(avg, threshold)) {
-        idle_seen++;
+    int idle_slots = 0;
+    while (keep_running && idle_slots < 3) {
+      if (!slot_is_active(buf, perm, PROBE_LINES, threshold)) {
+        idle_slots++;
       } else {
-        idle_seen = 0;
+        idle_slots = 0;
       }
     }
+    shreg = 0;
   }
 
   return 0;

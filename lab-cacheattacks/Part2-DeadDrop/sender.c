@@ -1,6 +1,6 @@
 #include "util.h"
-#include <sys/mman.h>
 #include <errno.h>
+#include <sys/mman.h>
 
 #ifndef MAP_POPULATE
 #define MAP_POPULATE 0
@@ -12,13 +12,10 @@
 
 #define BUFF_SIZE (1 << 21)
 #define LINE_SIZE 64
-#define THRASH_LINES (BUFF_SIZE / LINE_SIZE)
+#define ACTIVE_LINES 4096
 
-#define SLOT_NS 60000000ULL
-#define PREAMBLE_SLOTS 8
-#define GAP_SLOTS 2
-#define BIT_REP 5
-#define TRAIL_SLOTS 3
+#define SLOT_NS 45000000ULL
+#define TRAIL_IDLE_SLOTS 4
 
 static inline uint64_t monotonic_ns(void)
 {
@@ -56,7 +53,7 @@ static void build_perm(uint32_t *idx, uint32_t n)
     idx[i] = i;
   }
 
-  uint32_t x = 0xCAFEBABEu;
+  uint32_t x = 0xA5A5A5A5u;
   for (uint32_t i = n - 1; i > 0; i--) {
     x ^= x << 13;
     x ^= x >> 17;
@@ -77,7 +74,7 @@ static inline void thrash_once(char *buf, const uint32_t *perm, uint32_t nlines)
   }
 }
 
-static void tx_active_slot(char *buf, const uint32_t *perm, uint32_t nlines)
+static void send_active_slot(char *buf, const uint32_t *perm, uint32_t nlines)
 {
   uint64_t end_ns = monotonic_ns() + SLOT_NS;
   while (monotonic_ns() < end_ns) {
@@ -85,36 +82,52 @@ static void tx_active_slot(char *buf, const uint32_t *perm, uint32_t nlines)
   }
 }
 
-static void tx_idle_slots(int nslots)
+static void send_idle_slot(void)
 {
-  sleep_ns(SLOT_NS * (uint64_t)nslots);
+  sleep_ns(SLOT_NS);
 }
 
-static void tx_logical_bit(char *buf, const uint32_t *perm, uint32_t nlines, int bit)
+static void send_symbol(char *buf, const uint32_t *perm, uint32_t nlines, int active)
 {
-  for (int r = 0; r < BIT_REP; r++) {
-    if (bit) {
-      tx_active_slot(buf, perm, nlines);
-    } else {
-      tx_idle_slots(1);
-    }
+  if (active) {
+    send_active_slot(buf, perm, nlines);
+  } else {
+    send_idle_slot();
   }
 }
 
-static void tx_frame(char *buf, const uint32_t *perm, uint32_t nlines, uint8_t value)
+static void send_sync(char *buf, const uint32_t *perm, uint32_t nlines)
 {
-  for (int i = 0; i < PREAMBLE_SLOTS; i++) {
-    tx_active_slot(buf, perm, nlines);
+  /* Sync word: 1 1 0 0 1 1 */
+  send_symbol(buf, perm, nlines, 1);
+  send_symbol(buf, perm, nlines, 1);
+  send_symbol(buf, perm, nlines, 0);
+  send_symbol(buf, perm, nlines, 0);
+  send_symbol(buf, perm, nlines, 1);
+  send_symbol(buf, perm, nlines, 1);
+}
+
+static void send_bit(char *buf, const uint32_t *perm, uint32_t nlines, int bit)
+{
+  /* Manchester-like: 1 => active,idle ; 0 => idle,active */
+  if (bit) {
+    send_symbol(buf, perm, nlines, 1);
+    send_symbol(buf, perm, nlines, 0);
+  } else {
+    send_symbol(buf, perm, nlines, 0);
+    send_symbol(buf, perm, nlines, 1);
   }
+}
 
-  tx_idle_slots(GAP_SLOTS);
-
-  for (int b = 7; b >= 0; b--) {
-    int bit = (value >> b) & 1;
-    tx_logical_bit(buf, perm, nlines, bit);
+static void send_u8(char *buf, const uint32_t *perm, uint32_t nlines, uint8_t value)
+{
+  send_sync(buf, perm, nlines);
+  for (int bit = 7; bit >= 0; bit--) {
+    send_bit(buf, perm, nlines, (value >> bit) & 1);
   }
-
-  tx_idle_slots(TRAIL_SLOTS);
+  for (int i = 0; i < TRAIL_IDLE_SLOTS; i++) {
+    send_idle_slot();
+  }
 }
 
 static bool parse_u8_line(const char *line, uint8_t *value)
@@ -125,14 +138,12 @@ static bool parse_u8_line(const char *line, uint8_t *value)
   if (endptr == line || errno != 0) {
     return false;
   }
-
   while (*endptr == ' ' || *endptr == '\t' || *endptr == '\n' || *endptr == '\r') {
     endptr++;
   }
   if (*endptr != '\0' || v < 0 || v > 255) {
     return false;
   }
-
   *value = (uint8_t)v;
   return true;
 }
@@ -140,19 +151,19 @@ static bool parse_u8_line(const char *line, uint8_t *value)
 int main(void)
 {
   char *buf = (char *)alloc_buffer();
-
   for (int i = 0; i < BUFF_SIZE; i += LINE_SIZE) {
     buf[i] = (char)(i & 0xFF);
   }
 
-  uint32_t *perm = (uint32_t *)malloc(THRASH_LINES * sizeof(uint32_t));
+  uint32_t *perm = (uint32_t *)malloc(ACTIVE_LINES * sizeof(uint32_t));
   if (!perm) {
     perror("malloc");
     exit(EXIT_FAILURE);
   }
-  build_perm(perm, THRASH_LINES);
+  build_perm(perm, ACTIVE_LINES);
 
   printf("Please type a message.\n");
+  fflush(stdout);
 
   char line[128];
   while (fgets(line, sizeof(line), stdin)) {
@@ -160,13 +171,14 @@ int main(void)
       break;
     }
 
-    uint8_t value;
+    uint8_t value = 0;
     if (!parse_u8_line(line, &value)) {
       printf("Invalid input. Enter an integer in [0,255].\n");
+      fflush(stdout);
       continue;
     }
 
-    tx_frame(buf, perm, THRASH_LINES, value);
+    send_u8(buf, perm, ACTIVE_LINES, value);
     printf("Please type a message.\n");
     fflush(stdout);
   }
