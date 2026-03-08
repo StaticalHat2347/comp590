@@ -1,6 +1,21 @@
 #include "util.h"
-#include <errno.h>
 #include <sys/mman.h>
+#include <time.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdint.h>
+
+#define BUFF_SIZE (1 << 21)
+#define SET_ASSOCIATIVITY 16
+#ifndef SET_STRIDE_BYTES
+#define SET_STRIDE_BYTES (1 << 16)
+#endif
+
+#define SET_SPACING 32
+#define BASE_SET 64
+#define VALID_SET_ID 8
+#define DATA_BITS 8
+#define SEND_HOLD_ITERS 2000000L
 
 #ifndef MAP_POPULATE
 #define MAP_POPULATE 0
@@ -10,181 +25,141 @@
 #define MAP_HUGETLB 0
 #endif
 
-#define BUFF_SIZE (1 << 21)
-#define LINE_SIZE 64
-#define ACTIVE_LINES 4096
+struct node {
+    struct node *next;
+    char pad[64 - sizeof(struct node *)];
+};
 
-#define SLOT_NS 45000000ULL
-#define TRAIL_IDLE_SLOTS 4
-#define TX_REPEATS 3
+static void *work_area;
+static struct node *set_chains[256];
 
-static inline uint64_t monotonic_ns(void)
-{
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
-}
-
-static inline void sleep_ns(uint64_t ns)
-{
-  struct timespec ts;
-  ts.tv_sec = (time_t)(ns / 1000000000ULL);
-  ts.tv_nsec = (long)(ns % 1000000000ULL);
-  nanosleep(&ts, NULL);
-}
-
-static void *alloc_buffer(void)
-{
-  int flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB;
-  void *buf = mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, flags, -1, 0);
-  if (buf == (void *)-1 && MAP_HUGETLB != 0) {
-    flags = MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE;
-    buf = mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, flags, -1, 0);
-  }
-  if (buf == (void *)-1) {
-    perror("mmap");
-    exit(EXIT_FAILURE);
-  }
-  return buf;
-}
-
-static void build_perm(uint32_t *idx, uint32_t n)
-{
-  for (uint32_t i = 0; i < n; i++) {
-    idx[i] = i;
-  }
-
-  uint32_t x = 0xA5A5A5A5u;
-  for (uint32_t i = n - 1; i > 0; i--) {
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    uint32_t j = x % (i + 1);
-    uint32_t t = idx[i];
-    idx[i] = idx[j];
-    idx[j] = t;
-  }
-}
-
-static inline void thrash_once(char *buf, const uint32_t *perm, uint32_t nlines)
-{
-  static volatile uint8_t sink = 0;
-  for (uint32_t k = 0; k < nlines; k++) {
-    volatile uint8_t *p = (volatile uint8_t *)(buf + ((size_t)perm[k] * LINE_SIZE));
-    sink ^= *p;
-  }
-}
-
-static void send_active_slot(char *buf, const uint32_t *perm, uint32_t nlines)
-{
-  uint64_t end_ns = monotonic_ns() + SLOT_NS;
-  while (monotonic_ns() < end_ns) {
-    thrash_once(buf, perm, nlines);
-  }
-}
-
-static void send_idle_slot(void)
-{
-  sleep_ns(SLOT_NS);
-}
-
-static void send_symbol(char *buf, const uint32_t *perm, uint32_t nlines, int active)
-{
-  if (active) {
-    send_active_slot(buf, perm, nlines);
-  } else {
-    send_idle_slot();
-  }
-}
-
-static void send_sync(char *buf, const uint32_t *perm, uint32_t nlines)
-{
-  /* Sync word: 1 1 0 0 1 1 */
-  send_symbol(buf, perm, nlines, 1);
-  send_symbol(buf, perm, nlines, 1);
-  send_symbol(buf, perm, nlines, 0);
-  send_symbol(buf, perm, nlines, 0);
-  send_symbol(buf, perm, nlines, 1);
-  send_symbol(buf, perm, nlines, 1);
-}
-
-static void send_bit(char *buf, const uint32_t *perm, uint32_t nlines, int bit)
-{
-  /* Manchester-like: 1 => active,idle ; 0 => idle,active */
-  if (bit) {
-    send_symbol(buf, perm, nlines, 1);
-    send_symbol(buf, perm, nlines, 0);
-  } else {
-    send_symbol(buf, perm, nlines, 0);
-    send_symbol(buf, perm, nlines, 1);
-  }
-}
-
-static void send_u8(char *buf, const uint32_t *perm, uint32_t nlines, uint8_t value)
-{
-  for (int rep = 0; rep < TX_REPEATS; rep++) {
-    send_sync(buf, perm, nlines);
-    for (int bit = 7; bit >= 0; bit--) {
-      send_bit(buf, perm, nlines, (value >> bit) & 1);
+static void shuffle_nodes(struct node **nodes, int count) {
+    for (int i = count - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        struct node *tmp = nodes[i];
+        nodes[i] = nodes[j];
+        nodes[j] = tmp;
     }
-    for (int i = 0; i < TRAIL_IDLE_SLOTS; i++) {
-      send_idle_slot();
-    }
-  }
 }
 
-static bool parse_u8_line(const char *line, uint8_t *value)
-{
-  char *endptr;
-  errno = 0;
-  long v = strtol(line, &endptr, 10);
-  if (endptr == line || errno != 0) {
-    return false;
-  }
-  while (*endptr == ' ' || *endptr == '\t' || *endptr == '\n' || *endptr == '\r') {
-    endptr++;
-  }
-  if (*endptr != '\0' || v < 0 || v > 255) {
-    return false;
-  }
-  *value = (uint8_t)v;
-  return true;
-}
+static void create_set_chain(int logical_set_id) {
+    char *base = (char *)work_area;
+    struct node *ways[SET_ASSOCIATIVITY];
+    int physical_set_id = BASE_SET + logical_set_id * SET_SPACING;
 
-int main(void)
-{
-  char *buf = (char *)alloc_buffer();
-  for (int i = 0; i < BUFF_SIZE; i += LINE_SIZE) {
-    buf[i] = (char)(i & 0xFF);
-  }
-
-  uint32_t *perm = (uint32_t *)malloc(ACTIVE_LINES * sizeof(uint32_t));
-  if (!perm) {
-    perror("malloc");
-    exit(EXIT_FAILURE);
-  }
-  build_perm(perm, ACTIVE_LINES);
-
-  printf("Please type an integer in [0,255] per line (or quit).\n");
-  fflush(stdout);
-
-  char line[128];
-  while (fgets(line, sizeof(line), stdin)) {
-    if (strncmp(line, "quit", 4) == 0 || strncmp(line, "exit", 4) == 0) {
-      break;
+    for (int way = 0; way < SET_ASSOCIATIVITY; way++) {
+        ways[way] = (struct node *)(base + physical_set_id * 64 + way * SET_STRIDE_BYTES);
     }
 
-    uint8_t value = 0;
-    if (!parse_u8_line(line, &value)) {
-      printf("Invalid input. Enter an integer in [0,255].\n");
-      fflush(stdout);
-      continue;
+    shuffle_nodes(ways, SET_ASSOCIATIVITY);
+
+    for (int way = 0; way < SET_ASSOCIATIVITY - 1; way++) {
+        ways[way]->next = ways[way + 1];
+    }
+    ways[SET_ASSOCIATIVITY - 1]->next = NULL;
+
+    set_chains[logical_set_id] = ways[0];
+}
+
+static void touch_chain_once(int set_id) {
+    struct node *cursor = set_chains[set_id];
+    while (cursor) {
+        cursor = cursor->next;
+    }
+}
+
+static void evict_set(int set_id) {
+    touch_chain_once(set_id);
+    touch_chain_once(set_id);
+}
+
+static void initialize_memory_and_sets(void) {
+    work_area = mmap(NULL,
+                     BUFF_SIZE,
+                     PROT_READ | PROT_WRITE,
+                     MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB,
+                     -1,
+                     0);
+
+    if (work_area == (void *)-1) {
+        perror("mmap() error\n");
+        exit(EXIT_FAILURE);
     }
 
-    send_u8(buf, perm, ACTIVE_LINES, value);
-    printf("Please type an integer in [0,255] per line (or quit).\n");
-    fflush(stdout);
-  }
+    *((char *)work_area) = 1;
 
-  return 0;
+    for (int set_id = 0; set_id <= VALID_SET_ID; set_id++) {
+        create_set_chain(set_id);
+    }
+}
+
+static int parse_byte_input(const char *line, int *value_out) {
+    char *end = NULL;
+    long value = strtol(line, &end, 10);
+
+    if (end == line) {
+        return 0;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') {
+        end++;
+    }
+    if (*end != '\0' || value < 0 || value > 255) {
+        return 0;
+    }
+
+    *value_out = (int)value;
+    return 1;
+}
+
+static int build_active_set_list(int payload, int active_sets[DATA_BITS]) {
+    int count = 0;
+    uint8_t mask = (uint8_t)payload;
+
+    for (int set_id = 0; set_id < DATA_BITS; set_id++) {
+        if (mask & (uint8_t)(1u << set_id)) {
+            active_sets[count++] = set_id;
+        }
+    }
+    return count;
+}
+
+static void transmit_payload(int payload) {
+    int active_sets[DATA_BITS];
+    int active_count = build_active_set_list(payload, active_sets);
+
+    for (long iter = 0; iter < SEND_HOLD_ITERS; iter++) {
+        evict_set(VALID_SET_ID);
+        for (int idx = 0; idx < active_count; idx++) {
+            evict_set(active_sets[idx]);
+        }
+    }
+}
+
+int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+
+    srand(time(NULL));
+    initialize_memory_and_sets();
+
+    printf("Please type a message.\n");
+
+    for (;;) {
+        char input_buf[128];
+        int payload = 0;
+
+        if (fgets(input_buf, sizeof(input_buf), stdin) == NULL) {
+            break;
+        }
+
+        if (!parse_byte_input(input_buf, &payload)) {
+            printf("Please enter a value between 0 and 255.\n");
+            continue;
+        }
+
+        transmit_payload(payload);
+        printf("Sent. Please type a message.\n");
+    }
+
+    return 0;
 }
