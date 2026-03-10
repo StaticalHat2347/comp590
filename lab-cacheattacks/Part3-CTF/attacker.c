@@ -131,7 +131,7 @@ int main(int argc, char const *argv[]) {
 
     
     uint64_t threshold = 295; // From Part 01 Timing Graph 
-    int rounds = 35000; // High statistical rate to go above noise of measurements
+    int rounds = 30000; // High statistical rate to go above noise of measurements
 
     for(int s = 0; s < L2_SETS; s++) {
         uint64_t hits = 0;
