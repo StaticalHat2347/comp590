@@ -19,15 +19,12 @@
 // Linked List so that the CPU will have to follow the chain of pointers, which will cause cache evictions
 struct linked_list_node {
     struct linked_list_node *next;
-    struct linked_list_node *prev;
-    char padding[BASE_SET - (2 * sizeof(struct linked_list_node *))];
+    char padding[BASE_SET - (sizeof(struct linked_list_node *))];
 };
 
 // Variables for the work area and the linked list chains for each cache set
 void *work_area;
-struct linked_list_node *set_chains_head[L2_SETS];
-struct linked_list_node *set_chains_tail[L2_SETS];
-uint64_t record[L2_SETS];
+struct linked_list_node *set_chains[L2_SETS];
 
 // Calculate Latency Difference through rdtscp
 static inline uint64_t rdtscp(void) {
@@ -58,14 +55,13 @@ void eviction_set_construction(int logical_set_id) {
         nodes[way]->next = nodes[way + 1];
     }
     nodes[L2_ASSOCIATIVITY - 1]->next = NULL;
-    set_chains_head[logical_set_id] = nodes[0];
-    set_chains_tail[logical_set_id] = nodes[L2_ASSOCIATIVITY - 1];
+    set_chains[logical_set_id] = nodes[0];
 }
 
 // Prime the cache by following the linked list for the given set ID
 void prime_cache(int set_id) {
-    for(int i = 0; i < 6; i++) {
-        volatile struct linked_list_node *current = set_chains_head[set_id];
+    for(int i = 0; i < L2_ASSOCIATIVITY; i++) {
+        volatile struct linked_list_node *current = set_chains[set_id];
         while (current) {
             current = current->next;
         }
@@ -74,32 +70,12 @@ void prime_cache(int set_id) {
 
 // Probe the cache by measuring the time taken to follow the linked list for the given set ID
 uint64_t probe_cache(int set_id) {
-    // uint64_t start_time = rdtscp();
-    // volatile struct linked_list_node *current = set_chains[set_id];
-    // while (current) {
-    //    current = current->next;
-    // }
-    // return rdtscp() - start_time; // return the latency of probing the cache
-    
-    volatile struct linked_list_node *curr = set_chains_tail[set_id]; 
-    
-    uint32_t lo, hi;
-    uint64_t t1, t2;
-    // Get start time
-    // Use lfence to serialize instructions and ensure accurate timing
-    asm volatile("lfence");
-    asm volatile("rdtscp" : "=a"(lo), "=d"(hi) :: "rcx");
-    t1 = ((uint64_t)hi << 32) | lo;
-    asm volatile("lfence");
-    while (curr) {
-        curr = curr->prev; 
+    uint64_t start_time = rdtscp();
+    volatile struct linked_list_node *current = set_chains[set_id];
+    while (current) {
+        current = current->next;
     }
-    // Get end time
-    asm volatile("lfence");
-    asm volatile("rdtscp" : "=a"(lo), "=d"(hi) :: "rcx");
-    t2 = ((uint64_t)hi << 32) | lo;
-    asm volatile("lfence");
-    return t2 - t1;
+    return rdtscp() - start_time; // return the latency of probing the cache
 }
 
 // 
@@ -125,6 +101,8 @@ int main(int argc, char const *argv[]) {
     }
 
     memset(work_area, 0, PAGE_SIZE); // Initialize the work area with zeros
+    uint64_t record[L2_SETS];
+    memset(record, 0, sizeof(record)); // Record the number of hits for each set
 
     // Eviction set constructed for L2 cache sets
     for(int i = 0; i < L2_SETS; i++) {
@@ -135,21 +113,13 @@ int main(int argc, char const *argv[]) {
     uint64_t threshold = 295; // From Part 01 Timing Graph 
     int rounds = 30000; // High statistical rate to go above noise of measurements
 
-    for(int s = 0; s < L2_SETS; s++) {
-        uint64_t hits = 0;
-        for(int r = 0; r < rounds; r++) {
+    for(int r = 0; r < ROUNDS; r++) {
+        for(int s = 0; s < L2_SETS; s++) {
             prime_cache(s);
             // Waiting for Victim to access the cache line
             for(volatile int wait= 0; wait < 200; wait++);
-            uint64_t latency = probe_cache(s);
-            if(latency > threshold) {
-                hits++;
-            }
-        }
-        record[s] = hits;
-        // Print sets with noticeable activity
-        if(hits > rounds * 0.1) {
-            printf("Set %d: %lu hits\n", s, hits);
+            latency = probe_cache(s);
+            record[s] += latency
         }
     }
 
