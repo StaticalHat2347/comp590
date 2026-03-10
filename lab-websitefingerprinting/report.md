@@ -35,7 +35,7 @@
 
 **According to your measurement results, what is the resolution of your `performance.now()`? In order to measure differences in time with `performance.now()``, approximately how many cache accesses need to be performed?**
 
-The resolution, or the minimum measureable time increment in this case, is 0.10 milliseconds/100 microseconds. To measure differences in time with performance.now, at least 10,000 cache accesses need to be performed.
+The resolution, or the minimum measurable time increment in this case, is 0.10 milliseconds/100 microseconds. To measure differences in time with performance.now, at least 10,000 cache accesses need to be performed.
 
 
 ## 2-2
