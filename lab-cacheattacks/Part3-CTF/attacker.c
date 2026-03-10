@@ -20,7 +20,7 @@
 struct linked_list_node {
     struct linked_list_node *next;
     char padding[BASE_SET - sizeof(struct linked_list_node *)];
-}
+};
 
 // Variables for the work area and the linked list chains for each cache set
 void *work_area;
