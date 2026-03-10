@@ -60,7 +60,7 @@ void eviction_set_construction(int logical_set_id) {
 
 // Prime the cache by following the linked list for the given set ID
 void prime_cache(int set_id) {
-    struct linked_list_node *current = set_chains[set_id];
+    volatile struct linked_list_node *current = set_chains[set_id];
     while (current) {
         current = current->next;
     }
@@ -69,7 +69,7 @@ void prime_cache(int set_id) {
 // Probe the cache by measuring the time taken to follow the linked list for the given set ID
 uint64_t probe_cache(int set_id) {
     uint64_t start_time = rdtscp();
-    struct linked_list_node *current = set_chains[set_id];
+    volatile struct linked_list_node *current = set_chains[set_id];
     while (current) {
         current = current->next;
     }
@@ -96,10 +96,6 @@ int main(int argc, char const *argv[]) {
                      MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE,
                      -1,
                      0);
-        if(work_area == (void*) - 1) {
-            perror("Fallback mmap failed");
-            exit(EXIT_FAILURE);
-        }
     }
 
     memset(work_area, 0, PAGE_SIZE); // Initialize the work area with zeros
@@ -111,27 +107,22 @@ int main(int argc, char const *argv[]) {
 
     
     uint64_t threshold = 295; // From Part 01 Timing Graph 
-    int rounds = 15000; // High statistical rate to go above noise of measurements
-
-    // To record the hits above threshold
-    uint64_t record[L2_SETS];
-    memset(record, 0, sizeof(record));
+    int rounds = 500; // High statistical rate to go above noise of measurements
+    uint64_t record[L2_SETS] = {0};
 
     for(int s = 0; s < L2_SETS; s++) {
-        uint64_t hits = 0;
         for(int r = 0; r < rounds; r++) {
             prime_cache(s);
             // Waiting for Victim to access the cache line
-            for(volatile int wait = 0; wait < 200; wait++);
+            for(volatile int wait= 0; wait < 200; wait++);
             uint64_t latency = probe_cache(s);
             if(latency > threshold) {
-                hits++;
+                record[s]++;
             }
         }
-        record[s] = hits;
         // Print sets with noticeable activity
-        if(hits > rounds * 0.1) {
-            printf("Set %d: %lu hits\n", s, hits);
+        if(record[s] > rounds * 0.1) {
+            printf("Set %d: %lu hits\n", s, record[s]);
         }
     }
 
