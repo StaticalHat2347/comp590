@@ -118,8 +118,7 @@ int main(int argc, char const *argv[]) {
             prime_cache(s);
             // Waiting for Victim to access the cache line
             for(volatile int wait= 0; wait < 200; wait++);
-            latency = probe_cache(s);
-            record[s] += latency;
+            record[s] += probe_cache(s);
         }
     }
 
