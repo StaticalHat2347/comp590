@@ -13,7 +13,7 @@
 #define BASE_SET 64
 #define PAGE_SIZE (1 << 21) // 2 MB
 #ifndef SET_STRIDE_BYTES 
-#define SET_STRIDE_BYTES (1 << 16) 
+#define SET_STRIDE_BYTES (1 << 17) 
 #endif
 
 // Linked List so that the CPU will have to follow the chain of pointers, which will cause cache evictions
