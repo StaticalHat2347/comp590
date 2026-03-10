@@ -64,9 +64,11 @@ void eviction_set_construction(int logical_set_id) {
 
 // Prime the cache by following the linked list for the given set ID
 void prime_cache(int set_id) {
-    volatile struct linked_list_node *current = set_chains_head[set_id];
-    while (current) {
-        current = current->next;
+    for(int i = 0; i < 6; i++) {
+        volatile struct linked_list_node *current = set_chains_head[set_id];
+        while (current) {
+            current = current->next;
+        }
     }
 }
 
