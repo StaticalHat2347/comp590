@@ -142,6 +142,6 @@ int main(int argc, char const *argv[]) {
             flag = i;
         }
     }
-    printf("\nDetected Flag: %d (Score: %lu)\n", flag, max_hits);
+    printf("\nDetected Flag: %d \n", flag);
     return 0;
 }
