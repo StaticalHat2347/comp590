@@ -90,7 +90,7 @@ int main(int argc, char const *argv[]) {
                      MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB,
                      -1,
                      0);
-    if(work_area == (void*) - 1) {
+    if(work_area == MAP_FAILED) {
         perror("hugepage map failed, trying regular page");
         work_area = mmap(NULL,
                      PAGE_SIZE,
@@ -98,6 +98,8 @@ int main(int argc, char const *argv[]) {
                      MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE,
                      -1,
                      0);
+        if(work_area == MAP_FAILED) {
+            exit(EXIT_FAILURE);
     }
 
     memset(work_area, 0, PAGE_SIZE); // Initialize the work area with zeros
@@ -117,8 +119,11 @@ int main(int argc, char const *argv[]) {
         for(int s = 0; s < L2_SETS; s++) {
             prime_cache(s);
             // Waiting for Victim to access the cache line
-            for(volatile int wait= 0; wait < 200; wait++);
-            record[s] += probe_cache(s);
+            for(volatile int wait= 0; wait < 100; wait++);
+            asm volatile("lfence");
+            uint64_t latency = probe_cache(s);
+            asm volatile("lfence");
+            record[s] += latency;
         }
     }
 
