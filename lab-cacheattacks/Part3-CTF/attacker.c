@@ -100,6 +100,7 @@ int main(int argc, char const *argv[]) {
                      0);
         if(work_area == MAP_FAILED) {
             exit(EXIT_FAILURE);
+        }
     }
 
     memset(work_area, 0, PAGE_SIZE); // Initialize the work area with zeros
