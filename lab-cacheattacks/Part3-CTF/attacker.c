@@ -25,7 +25,8 @@ struct linked_list_node {
 
 // Variables for the work area and the linked list chains for each cache set
 void *work_area;
-struct linked_list_node *set_chains[L2_SETS];
+struct linked_list_node *set_chains_head[L2_SETS];
+struct linked_list_node *set_chains_tail[L2_SETS];
 uint64_t record[L2_SETS];
 
 // Calculate Latency Difference through rdtscp
@@ -57,12 +58,13 @@ void eviction_set_construction(int logical_set_id) {
         nodes[way]->next = nodes[way + 1];
     }
     nodes[L2_ASSOCIATIVITY - 1]->next = NULL;
-    set_chains[logical_set_id] = nodes[0];
+    set_chains_head[logical_set_id] = nodes[0];
+    set_chains_tail[logical_set_id] = nodes[L2_ASSOCIATIVITY - 1];
 }
 
 // Prime the cache by following the linked list for the given set ID
 void prime_cache(int set_id) {
-    volatile struct linked_list_node *current = set_chains[set_id];
+    volatile struct linked_list_node *current = set_chains_head[set_id];
     while (current) {
         current = current->next;
     }
