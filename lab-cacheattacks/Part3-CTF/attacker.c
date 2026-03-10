@@ -77,7 +77,7 @@ uint64_t probe_cache(int set_id) {
     // }
     // return rdtscp() - start_time; // return the latency of probing the cache
     
-    volatile struct linked_list_node *curr = set_chains_tail[s]; 
+    volatile struct linked_list_node *curr = set_chains_tail[set_id]; 
     
     uint32_t lo, hi;
     uint64_t t1, t2;
