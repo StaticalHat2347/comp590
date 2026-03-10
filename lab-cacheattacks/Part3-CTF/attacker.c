@@ -19,7 +19,7 @@
 // Linked List so that the CPU will have to follow the chain of pointers, which will cause cache evictions
 struct linked_list_node {
     struct linked_list_node *next;
-    char padding[LINE_SIZE - sizeof(struct linked_list_node *)];
+    char padding[BASE_SET - sizeof(struct linked_list_node *)];
 }
 
 // Variables for the work area and the linked list chains for each cache set
@@ -89,8 +89,17 @@ int main(int argc, char const *argv[]) {
                      -1,
                      0);
     if(work_area == (void*) - 1) {
-        perror("mmap failed");
-        exit(EXIT_FAILURE);
+        perror("hugepage map failed, trying regular page");
+        work_area = mmap(NULL,
+                     PAGE_SIZE,
+                     PROT_READ | PROT_WRITE,
+                     MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE,
+                     -1,
+                     0);
+        if(work_area == (void*) - 1) {
+            perror("Fallback mmap failed");
+            exit(EXIT_FAILURE);
+        }
     }
 
     memset(work_area, 0, PAGE_SIZE); // Initialize the work area with zeros
