@@ -25,6 +25,7 @@ struct linked_list_node {
 // Variables for the work area and the linked list chains for each cache set
 void *work_area;
 struct linked_list_node *set_chains[L2_SETS];
+uint64_t record[L2_SETS];
 
 // Calculate Latency Difference through rdtscp
 static inline uint64_t rdtscp(void) {
@@ -107,22 +108,23 @@ int main(int argc, char const *argv[]) {
 
     
     uint64_t threshold = 295; // From Part 01 Timing Graph 
-    int rounds = 500; // High statistical rate to go above noise of measurements
-    uint64_t record[L2_SETS] = {0};
+    int rounds = 30000; // High statistical rate to go above noise of measurements
 
     for(int s = 0; s < L2_SETS; s++) {
+        uint64_t hits = 0;
         for(int r = 0; r < rounds; r++) {
             prime_cache(s);
             // Waiting for Victim to access the cache line
             for(volatile int wait= 0; wait < 200; wait++);
             uint64_t latency = probe_cache(s);
             if(latency > threshold) {
-                record[s]++;
+                hits++;
             }
         }
+        record[s] = hits;
         // Print sets with noticeable activity
-        if(record[s] > rounds * 0.1) {
-            printf("Set %d: %lu hits\n", s, record[s]);
+        if(hits > rounds * 0.1) {
+            printf("Set %d: %lu hits\n", s, hits);
         }
     }
 
