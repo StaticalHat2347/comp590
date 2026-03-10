@@ -19,7 +19,8 @@
 // Linked List so that the CPU will have to follow the chain of pointers, which will cause cache evictions
 struct linked_list_node {
     struct linked_list_node *next;
-    char padding[BASE_SET - sizeof(struct linked_list_node *)];
+    struct linked_list_node *prev;
+    char padding[BASE_SET - (2 * sizeof(struct linked_list_node *))];
 };
 
 // Variables for the work area and the linked list chains for each cache set
@@ -69,12 +70,32 @@ void prime_cache(int set_id) {
 
 // Probe the cache by measuring the time taken to follow the linked list for the given set ID
 uint64_t probe_cache(int set_id) {
-    uint64_t start_time = rdtscp();
-    volatile struct linked_list_node *current = set_chains[set_id];
-    while (current) {
-        current = current->next;
+    // uint64_t start_time = rdtscp();
+    // volatile struct linked_list_node *current = set_chains[set_id];
+    // while (current) {
+    //    current = current->next;
+    // }
+    // return rdtscp() - start_time; // return the latency of probing the cache
+    
+    volatile struct linked_list_node *curr = set_chains_tail[s]; 
+    
+    uint32_t lo, hi;
+    uint64_t t1, t2;
+    // Get start time
+    // Use lfence to serialize instructions and ensure accurate timing
+    asm volatile("lfence");
+    asm volatile("rdtscp" : "=a"(lo), "=d"(hi) :: "rcx");
+    t1 = ((uint64_t)hi << 32) | lo;
+    asm volatile("lfence");
+    while (curr) {
+        curr = curr->prev; 
     }
-    return rdtscp() - start_time; // return the latency of probing the cache
+    // Get end time
+    asm volatile("lfence");
+    asm volatile("rdtscp" : "=a"(lo), "=d"(hi) :: "rcx");
+    t2 = ((uint64_t)hi << 32) | lo;
+    asm volatile("lfence");
+    return t2 - t1;
 }
 
 // 
