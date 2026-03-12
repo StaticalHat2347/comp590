@@ -118,14 +118,14 @@ int main(int argc, char const *argv[]) {
     }
 
     
-    uint64_t threshold = 280; // From Part 01 Timing Graph 
+    uint64_t threshold = 290; // From Part 01 Timing Graph 
     int rounds = 15000; // High statistical rate to go above noise of measurements
 
     for(int r = 0; r < rounds; r++) {
         for(int s = 0; s < L2_SETS; s++) {
             prime_cache(s);
             // Waiting for Victim to access the cache line
-            for(volatile int wait= 0; wait < 30; wait++);
+            for(volatile int wait= 0; wait < 100; wait++);
             uint64_t latency = probe_cache(s);
             if(latency > threshold) {
                 record[s]++;
