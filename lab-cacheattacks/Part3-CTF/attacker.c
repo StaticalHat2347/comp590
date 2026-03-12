@@ -136,13 +136,11 @@ int main(int argc, char const *argv[]) {
     uint64_t variance = (sum_sq / L2_SETS) - (mean * mean);
     uint64_t std_dev = (uint64_t)sqrt(variance);  // Need <math.h> for sqrt
     uint64_t threshold = mean + (3 * std_dev);
-    printf("Dynamic threshold: %llu cycles\n", threshold);
     for(int i = 0; i < L2_SETS; i++) {
         eviction_set_construction(i);
     }
 
     
-    uint64_t threshold = 295; // From Part 01 Timing Graph 
     int rounds = 3000; // High statistical rate to go above noise of measurements
 
     for(int r = 0; r < rounds; r++) {
