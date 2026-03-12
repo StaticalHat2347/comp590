@@ -125,7 +125,7 @@ int main(int argc, char const *argv[]) {
         for(int s = 0; s < L2_SETS; s++) {
             prime_cache(s);
             // Waiting for Victim to access the cache line
-            for(volatile int wait= 0; wait < 200; wait++);
+            for(volatile int wait= 0; wait < 500; wait++);
             uint64_t latency = probe_cache(s);
             if(latency > threshold) {
                 record[s]++;
