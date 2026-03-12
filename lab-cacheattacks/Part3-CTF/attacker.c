@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 
 #define L2_ASSOCIATIVITY 16
@@ -112,7 +113,30 @@ int main(int argc, char const *argv[]) {
     uint64_t record[L2_SETS] = {0};
     memset(record, 0, sizeof(record)); // Record the number of hits for each set
 
-    // Eviction set constructed for L2 cache sets
+    // Calibration: Measure baseline latencies for each set (no eviction)
+    uint64_t baseline_latencies[L2_SETS] = {0};
+    int calib_rounds = 1000;  // Adjust based on noise level
+    for (int r = 0; r < calib_rounds; r++) {
+        for (int s = 0; s < L2_SETS; s++) {
+            prime_cache(s);
+            uint64_t latency = probe_cache(s);
+            baseline_latencies[s] += latency;
+        }
+    }
+    for (int s = 0; s < L2_SETS; s++) {
+        baseline_latencies[s] /= calib_rounds;
+    }
+    // Compute threshold as mean + 3*std_dev (simple approximation)
+    uint64_t sum = 0, sum_sq = 0;
+    for (int s = 0; s < L2_SETS; s++) {
+        sum += baseline_latencies[s];
+        sum_sq += baseline_latencies[s] * baseline_latencies[s];
+    }
+    uint64_t mean = sum / L2_SETS;
+    uint64_t variance = (sum_sq / L2_SETS) - (mean * mean);
+    uint64_t std_dev = (uint64_t)sqrt(variance);  // Need <math.h> for sqrt
+    uint64_t threshold = mean + (3 * std_dev);
+    printf("Dynamic threshold: %llu cycles\n", threshold);
     for(int i = 0; i < L2_SETS; i++) {
         eviction_set_construction(i);
     }
@@ -126,7 +150,12 @@ int main(int argc, char const *argv[]) {
             prime_cache(s);
             // Waiting for Victim to access the cache line
             for(volatile int wait= 0; wait < 500; wait++);
-            uint64_t latency = probe_cache(s);
+            int probes_per_round = 5;
+            uint64_t total_latency = 0;
+            for (int p = 0; p < probes_per_round; p++) {
+                total_latency += probe_cache(s);
+            }
+            uint64_t latency = total_latency / probes_per_round;
             if(latency > threshold) {
                 record[s]++;
             }
