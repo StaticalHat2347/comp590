@@ -1,0 +1,11 @@
+Part 2
+
+Discussion Question 3:
+How can Spectre leak arbitrary values in the victim’s address space?
+
+In a real-world Spectre attack, the attacker can leak arbitrary values by controlling the memory address accessed during speculative execution. Instead of reading from a fixed array like secret_part2, the attacker provides a malicious offset that points to any desired memory location in the victim’s address space. During speculative execution, the CPU uses this out-of-bounds offset to read data from that location. Although the CPU later detects the access is invalid and discards the result, the data has already influenced the cache state. The attacker then uses a cache timing side channel such as Flush+Reload to determine which memory location was accessed, allowing them to recover the secret value. By repeating this process byte-by-byte, the attacker can leak arbitrary memory from the victim.
+
+Discussion Question 4:
+What is the fewest number of training iterations required?
+
+The minimum number of training iterations required for the attack to work reliably was approximately 30. When using fewer training iterations, the branch predictor was not consistently trained to predict the branch as taken, which reduced the likelihood of speculative execution and lowered the success rate. Increasing the number of training iterations improves reliability but also increases runtime, so a balance must be chosen.
