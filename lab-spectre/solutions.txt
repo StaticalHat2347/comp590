@@ -9,3 +9,8 @@ Discussion Question 4:
 What is the fewest number of training iterations required?
 
 The minimum number of training iterations required for the attack to work reliably was approximately 30. When using fewer training iterations, the branch predictor was not consistently trained to predict the branch as taken, which reduced the likelihood of speculative execution and lowered the success rate. Increasing the number of training iterations improves reliability but also increases runtime, so a balance must be chosen.
+
+Discussion Question 5:
+Describe your strategy to extend the speculation window of the target branch in the victim.
+
+The strategy was to make the bounds check slower while keeping the predictor trained to expect the branch to be taken. I repeatedly issued in-bounds calls to bias the branch predictor, then tried to evict the cache line containing `part3_limit` before the out-of-bounds call so the branch condition would take longer to resolve. That gives the speculative path more time to execute despite the shorter default window, the false dependency on the memory access, and the TLB miss on the shared-memory load. Because the signal is noisy, repeating the attack and choosing the most common observed byte improves reliability.

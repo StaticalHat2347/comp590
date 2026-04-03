@@ -33,6 +33,7 @@ No, this Flush+Reload attack would not work if the attacker and victim no longer
 
 **Describe the strategy you employed to extend the speculation window of the target branch in the victim.**
 
+The idea was to deliberately slow down how quickly the bounds check resolves while keeping the branch predictor heavily skewed toward taking the branch. To do this, I repeatedly trained the branch using in-bounds offsets so the CPU would speculatively execute the if body. Then, I attempted to evict the cache line containing part3_limit before triggering the out-of-bounds access, making the limit fetch slower. This delay allowed the speculative execution path to run longer, even though the victim now operates with a reduced default window, an added false dependency on the load, and a TLB miss during the shared-memory access. I also simplified the measurement phase and ran the attack multiple times, selecting the most frequently observed cache hit as the leaked byte.
 
 
 ## 3-3
