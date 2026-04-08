@@ -62,7 +62,7 @@ static char leak_byte_at_offset(int kernel_fd, char *shared_memory, size_t offse
                 
                 uint64_t latency = time_access(addr);
 
-                if (latency <= 135) { // Threshold set to 135
+                if (latency <= 150) {
                     hit_counts[mix_idx]++;
                 }
             }
