@@ -41,7 +41,29 @@ Answer: 1024 hugepages
 **Given a victim address 0x752C3000, what is the value of its Row id? The value of its Column id?**
 
 **For the same address, assume an arbitrary XOR function for computing the Bank id, list all possible attacker addresses whose Row id is one more than 0x752C3000's Row id and all the other ids match, including the Bank id and Column id. Hint: there should be 16 such addresses total.**
+For victim address 0x752C3000:
 
+Row ID: 0x3A96
+Column ID: 0x1000
+
+The row-adjacent attacker addresses with matching DRAM structure are:
+
+0x752E0000
+0x752E1000
+0x752E2000
+0x752E3000
+0x752E4000
+0x752E5000
+0x752E6000
+0x752E7000
+0x752E8000
+0x752E9000
+0x752EA000
+0x752EB000
+0x752EC000
+0x752ED000
+0x752EE000
+0x752EF000
 ## 2-3
 
 **Analyze the statistics produced by your code when running part2, and report a threshold to distinguish the bank conflict.**
