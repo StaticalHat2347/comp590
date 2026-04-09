@@ -5,6 +5,36 @@
 **How about for a 64-bit system using 2MB pages? Which bits are used for page number and which are for page offset?**
 
 **In a 2GB buffer, how many 2MB hugepages are there?**
+64-bit system using 4 KB pages
+Page Offset: bits [11:0]
+Page Number: bits [63:12]
+64-bit system using 2 MB pages
+Page Offset: bits [20:0]
+Page Number: bits [63:21]
+Number of 2 MB hugepages in 2 GB
+2
+ GB
+2
+ MB
+=
+2048
+ MB
+2
+ MB
+=
+1024
+2 MB
+2 GB
+	​
+
+=
+2 MB
+2048 MB
+	​
+
+=1024
+
+Answer: 1024 hugepages
 
 ## 2-1
 
@@ -15,6 +45,25 @@
 ## 2-3
 
 **Analyze the statistics produced by your code when running part2, and report a threshold to distinguish the bank conflict.**
+reasonable threshold is the midpoint:
+
+276
++
+288
+2
+=
+282
+2
+276+288
+	​
+
+=282
+
+Answer: 282 cycles
+
+Write-up:
+
+Based on the latency histogram from Part 2, accesses cluster around 272–276 cycles for non-conflicting accesses and 288–292 cycles for bank conflicts. A threshold of 282 cycles effectively distinguishes bank conflicts from non-conflicts.
 
 ## 3-2
 
