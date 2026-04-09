@@ -14,3 +14,8 @@ Discussion Question 5:
 Describe your strategy to extend the speculation window of the target branch in the victim.
 
 The idea was to slow down the bounds check while ensuring that the predictor was trained to predict a taken branch. The bounds checks were repeated with in-bounds calls to train the branch predictor, followed by an attempt to evict the cache line that contained part3_limit to increase the latency in resolving the branch condition when the out-of-bound call was made. This allowed for a larger speculative execution even if the speculative window was small due to the false dependency on memory access and TLB miss for the shared memory read operation.
+
+Discussion Question 6: 
+Assume you are an attacker looking to exploit a new machine that has the same kernel module installed as the one we attacked in this part. What information would you need to know about this new machine to port your attack? Could it be possible to determine this infomration experimentally? Briefly describe in 5 sentences or less.
+
+Some information I would need to know include the machine's latencies in timing the cache hits and misses, especially regarding L1/2/3 or DRAM latencies. I would also need to know the page size and the cache line size to make sure the shared memory is set up correctly and there is no overlaps. I can figure out some of these information by running loops of memory accesses and flushes while measuring the timing to determine the cache hierarchy and latencies. Finally, by experimenting with different parameters of cache threshold and training iterations, I can optimize the attack for the machine.
