@@ -9,11 +9,12 @@
 #include "../util.hh"
 
 #define BANKS 16
-#define CONSISTENCY_RATE 0.95
+#define CONSISTENCY_RATE 0.90
 // TODO: Threshold derived in part2
-#define THRESHOLD 1000 
+#define THRESHOLD 370 
 #define POOL_SIZE 1000
 #define ROUNDS  100
+
 
 
 
@@ -29,15 +30,22 @@ void print_bins(const std::array<std::vector<uint64_t>, BANKS>& bins) {
     }
 }
 
-int gt(const void * a, const void * b) {
-   return ( *(int*)a - *(int*)b );
+int gt(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t*)a;
+    uint64_t y = *(const uint64_t*)b;
+    if (x < y) return -1;
+    if (x > y) return 1;
+    return 0;
 }
 
 uint64_t median(uint64_t* vals, size_t size) {
-	qsort(vals, size, sizeof(uint64_t), gt);
-	return ((size%2)==0) ? vals[size/2] : (vals[(size_t)size/2]+vals[((size_t)size/2+1)])/2;
+    qsort(vals, size, sizeof(uint64_t), gt);
+    if (size % 2 == 1) {
+        return vals[size / 2];
+    } else {
+        return (vals[size / 2 - 1] + vals[size / 2]) / 2;
+    }
 }
-
 /*
  * bin_rows
  *
@@ -54,6 +62,46 @@ uint64_t median(uint64_t* vals, size_t size) {
 std::array<std::vector<uint64_t>, BANKS> bin_rows(uint64_t starting_addr, uint64_t final_addr) {
     // TODO - Exercise 3-1
     std::array<std::vector<uint64_t>, BANKS> bins;
+
+    
+    size_t next_empty_bin = 0;
+
+    for (uint64_t virt = starting_addr; virt < final_addr; virt += ROW_SIZE) {
+        uint64_t phys = virt_to_phys(virt);
+        if (phys == 0) continue;
+
+        bool placed = false;
+
+        for (size_t i = 0; i < next_empty_bin; i++) {
+            if (bins[i].empty()) continue;
+
+            uint64_t rep_phys = bins[i][0];
+            uint64_t rep_virt = phys_to_virt(rep_phys);
+            if (rep_virt == 0) continue;
+
+            uint64_t vals[ROUNDS];
+            for (size_t r = 0; r < ROUNDS; r++) {
+                vals[r] = measure_bank_latency(
+                    reinterpret_cast<volatile char*>(virt),
+                    reinterpret_cast<volatile char*>(rep_virt)
+                );
+            }
+
+            uint64_t med = median(vals, ROUNDS);
+
+            if (med > THRESHOLD) {
+                bins[i].push_back(phys);
+                placed = true;
+                break;
+            }
+        }
+
+        if (!placed && next_empty_bin < BANKS) {
+            bins[next_empty_bin].push_back(phys);
+            next_empty_bin++;
+        }
+    }
+
     return bins;
 }
 
