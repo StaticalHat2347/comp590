@@ -90,6 +90,15 @@ Therefore, this address is in the **same bank** as the victim while being in the
 
 **Do your results match your expectations? What is the best pattern to trigger flips effectively?**
 
+| Data Pattern (Victim/Aggressor) | Number of Flips (100 trials) |
+| --- | --- |
+| `0x00 / 0xff` | `10` |
+| `0xff / 0x00` | `12` |
+| `0x00 / 0x00` | `0` |
+| `0xff / 0xff` | `0` |
+
+The outcome conforms to the expectations. The complementary pattern between the aggressor and victim row resulted in more bit flips compared to when the same pattern is used in each row. For example, the pattern of 0xff/0x00 performed better than the rest with 12 flips in 100 trials. The next best is 0x00/0xff, having 10 flips, whereas the two patterns 0x00/0x00 and 0xff/0xff recorded zero flips.
+
 ## 5-1
 
 **Given the ECC type descriptions listed above, fill in the following table (assuming a data length of 4). For correction/detection, only answer "Yes" if it can always correct/detect (and "No" if there is ever a case where the scheme can fail to correct/detect). We've filled in the first line for you.**
@@ -101,4 +110,3 @@ Therefore, this address is in the **same bank** as the victim while being in the
 ## 5-5
 
 **Can the Hamming(22,16) code we implemented always protect us from rowhammer attacks? If not, describe how a clever attacker could work around this scheme.**
-

