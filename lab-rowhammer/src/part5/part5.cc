@@ -56,7 +56,7 @@ struct hamming_result findHammingErrors(uint32_t encoded) {
     uint32_t regenParity = genParity(decoded.data);
 
     // TODO: Exercise 5-4, Compute the syndrome
-   uint32_t syndrome = (recordedParity ^ regenParity) & 0x1F;
+    uint32_t syndrome = (recordedParity ^ regenParity) & 0x1F;
 
     // Compute parity over ALL 22 bits (same as loop, but optimized)
     uint32_t P5_Error_bit = encoded;
