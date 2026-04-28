@@ -59,14 +59,12 @@ struct hamming_result findHammingErrors(uint32_t encoded) {
     uint32_t syndrome = (recordedParity ^ regenParity) & 0x1F;
 
     // Compute parity over ALL 22 bits (same as loop, but optimized)
-    uint32_t P5_Error_bit = encoded;
+    uint32_t P5_Error_bit = encoded & ((1 << TOTAL_BITS) - 1);
 
-    // fold down to 4 bits
     P5_Error_bit ^= P5_Error_bit >> 16;
     P5_Error_bit ^= P5_Error_bit >> 8;
     P5_Error_bit ^= P5_Error_bit >> 4;
 
-    // lookup parity
     P5_Error_bit = (0x6996 >> (P5_Error_bit & 0xF)) & 1;
  
     _ERROR_TYPE error = NO_ERROR;
@@ -93,26 +91,8 @@ uint32_t verifyAndRepair(uint32_t encoded) {
 
     uint32_t out = encoded;
     if (result.error == SINGLE_ERROR) {
-
-        uint32_t syndrome = result.syndrome;
-
-        // Map syndrome index to actual encoded bit index
-        uint32_t count = 0;
-
-        for (uint32_t i = 0; i < TOTAL_BITS; i++) {
-            if (!isParityBit(i)) {
-                count++;
-            }
-
-            // Match syndrome position
-            if (count == syndrome) {
-                out = flipBit(out, i);
-                break;
-            }
-        }
-
+        out = flipBit(out, result.syndrome - 1);
     } else if (result.error == PARITY_ERROR) {
-        // Flip overall parity bit (P5)
         out = flipBit(out, TOTAL_BITS - 1);
     }
 
