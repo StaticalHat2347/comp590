@@ -113,6 +113,10 @@ The outcome conforms to the expectations. The complementary pattern between the 
 
 **When a single bit flip is detected, describe how Hamming(22,16) can correct this error.**
 
+When a single bit flip is detected, Hamming(22,16) flips the single bit by comparing the parity bits received and the parity bits stored. If the XOR of the 5-bit parity values (the syndrome) is 0, in a single bit flip, this means everything matches. If the syndrom is non-zero and P5 (overall parity) is 1, a single bit flip is detected and the overall parity bit is flipped.
+
 ## 5-5
 
 **Can the Hamming(22,16) code we implemented always protect us from rowhammer attacks? If not, describe how a clever attacker could work around this scheme.**
+
+No - Hamming(22,16) can correct 1-bit errors, detect 2-bit errors, and not reliably correct 2-bit errors. Therefore, if someone causes three or more bit flips, Hamming(22,16) will fail. A trick can be an attacker repeatedly hammering rows around the victim row to cause nearby data cells vulnerable to multiple bits (3+) flipping.
