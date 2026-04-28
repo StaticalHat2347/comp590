@@ -18,6 +18,28 @@ uint32_t genParity(uint32_t data) {
     uint32_t parity = 0;
 
     // TODO: Exercise 5-2, Generate the parity bits for the data
+    for (int parityBit = 0; parityBit < NUM_PARITY_BITS - 1; parityBit++) {
+        uint32_t bitParity = 0;
+
+        for (int dataBit = 0; dataBit < NUM_DATA_BITS; dataBit++) {
+            if (parity_eqs[parityBit][dataBit]) {
+                bitParity ^= getBit(data, dataBit);
+            }
+        }
+
+        parity |= bitParity << parityBit;
+    }
+
+    uint32_t overallParity = 0;
+    for (int dataBit = 0; dataBit < NUM_DATA_BITS; dataBit++) {
+        overallParity ^= getBit(data, dataBit);
+    }
+
+    for (int parityBit = 0; parityBit < NUM_PARITY_BITS - 1; parityBit++) {
+        overallParity ^= getBit(parity, parityBit);
+    }
+
+    parity |= overallParity << (NUM_PARITY_BITS - 1);
     
     return parity;
 }
