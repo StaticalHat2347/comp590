@@ -93,8 +93,26 @@ uint32_t verifyAndRepair(uint32_t encoded) {
 
     uint32_t out = encoded;
     if (result.error == SINGLE_ERROR) {
-        out = flipBit(out, result.syndrome - 1);
+
+        uint32_t syndrome = result.syndrome;
+
+        // Map syndrome index to actual encoded bit index
+        uint32_t count = 0;
+
+        for (uint32_t i = 0; i < TOTAL_BITS; i++) {
+            if (!isParityBit(i)) {
+                count++;
+            }
+
+            // Match syndrome position
+            if (count == syndrome) {
+                out = flipBit(out, i);
+                break;
+            }
+        }
+
     } else if (result.error == PARITY_ERROR) {
+        // Flip overall parity bit (P5)
         out = flipBit(out, TOTAL_BITS - 1);
     }
 
