@@ -103,6 +103,12 @@ The outcome conforms to the expectations. The complementary pattern between the 
 
 **Given the ECC type descriptions listed above, fill in the following table (assuming a data length of 4). For correction/detection, only answer "Yes" if it can always correct/detect (and "No" if there is ever a case where the scheme can fail to correct/detect). We've filled in the first line for you.**
 
+| Code | 1-Repetition (No ECC) | 2-Repetition | 3-Repetition | Single Parity Bit | Hamming(7,4) |
+|---|---:|---:|---:|---:|---:|
+| Code Rate (Data Bits / Total Bits) | 1.0 | 4/8 = 0.5 | 4/12 = 0.333 | 4/5 = 0.8 | 4/7 = 0.571 |
+| Max Number of Errors Can Detect |  | 1 | 2 | 1 | 2 |
+| Max Number of Errors Can Correct | 0 | 0 | 1 | 0 | 1 |
+
 ## 5-3
 
 **When a single bit flip is detected, describe how Hamming(22,16) can correct this error.**
