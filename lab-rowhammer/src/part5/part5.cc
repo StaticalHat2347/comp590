@@ -58,11 +58,21 @@ struct hamming_result findHammingErrors(uint32_t encoded) {
     // TODO: Exercise 5-4, Compute the syndrome
     uint32_t syndrome = 0;
 
-    // TODO: Exercise 5-4, Compute P5 Error bit
-    uint32_t P5_Error_bit = 0;
+    uint32_t P5_Error_bit = decoded.data ^ recordedParity;
+    P5_Error_bit ^= P5_Error_bit >> 16;
+    P5_Error_bit ^= P5_Error_bit >> 8;
+    P5_Error_bit ^= P5_Error_bit >> 4;
+    P5_Error_bit = (0x6996 >> (P5_Error_bit & 0xf)) & 1;
  
-    // TODO: Exercise 5-4, Determine the error type
     _ERROR_TYPE error = NO_ERROR;
+    
+    uint32_t paritySyndrome = (recordedParity ^ regenParity) & ((1 << (NUM_PARITY_BITS - 1)) - 1);
+
+    if (paritySyndrome) {
+        error = P5_Error_bit ? SINGLE_ERROR : DOUBLE_ERROR;
+    } else if (P5_Error_bit) {
+        error = PARITY_ERROR;
+    }
     
     return {error, syndrome};
 }
