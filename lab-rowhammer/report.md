@@ -106,7 +106,7 @@ The outcome conforms to the expectations. The complementary pattern between the 
 | Code | 1-Repetition (No ECC) | 2-Repetition | 3-Repetition | Single Parity Bit | Hamming(7,4) |
 |---|---:|---:|---:|---:|---:|
 | Code Rate (Data Bits / Total Bits) | 1.0 | 4/8 = 0.5 | 4/12 = 0.333 | 4/5 = 0.8 | 4/7 = 0.571 |
-| Max Number of Errors Can Detect |  | 1 | 2 | 1 | 2 |
+| Max Number of Errors Can Detect | 0 | 1 | 2 | 1 | 2 |
 | Max Number of Errors Can Correct | 0 | 0 | 1 | 0 | 1 |
 
 ## 5-3
